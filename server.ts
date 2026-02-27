@@ -1,14 +1,18 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import db from "./src/lib/db";
+import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_mock", {
-  apiVersion: "2026-02-25.clover",
+  apiVersion: "2025-01-27.acacia" as any,
 });
+
+const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function startServer() {
   const app = express();
@@ -19,196 +23,329 @@ async function startServer() {
   // API Routes
   
   // Plans
-  app.get("/api/plans", (req, res) => {
-    const plans = db.prepare("SELECT * FROM plans").all();
-    res.json(plans.map((p: any) => ({ ...p, benefits: JSON.parse(p.benefits) })));
+  app.get("/api/plans", async (req, res) => {
+    try {
+      const { data, error } = await supabase.from('plans').select('*');
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        return res.json(data.map((p: any) => ({ 
+          ...p, 
+          benefits: typeof p.benefits === 'string' ? JSON.parse(p.benefits) : p.benefits 
+        })));
+      }
+    } catch (e) {
+      console.error("Erro ao buscar planos do Supabase, usando fallback");
+    }
+
+    // Fallback plans
+    const fallbackPlans = [
+      { id: 'basic', name: 'Plano Basic', price: 89, description: 'Praticidade e economia para o dia a dia.', benefits: ['2 cortes por mês', '1 barba', '5% desconto em produtos'] },
+      { id: 'premium', name: 'Plano Premium', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', benefits: ['4 cortes por mês', '2 barbas', 'Prioridade no agendamento', '10% desconto em produtos'] },
+      { id: 'vip', name: 'Plano VIP', price: 199, description: 'Experiência completa e ilimitada.', benefits: ['Corte ilimitado (1 por semana)', 'Barba ilimitada (1 por semana)', 'Atendimento prioritário', '15% desconto em produtos', 'Brinde mensal'] }
+    ];
+    res.json(fallbackPlans);
   });
 
-  app.put("/api/plans/:id", (req, res) => {
+  app.put("/api/plans/:id", async (req, res) => {
     const { name, price, description, benefits } = req.body;
-    db.prepare("UPDATE plans SET name = ?, price = ?, description = ?, benefits = ? WHERE id = ?")
-      .run(name, price, description, JSON.stringify(benefits), req.params.id);
+    const { error } = await supabase
+      .from('plans')
+      .update({ name, price, description, benefits: JSON.stringify(benefits) })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // Dashboard Stats
-  app.get("/api/stats", (req, res) => {
-    const activeSubscribers = db.prepare("SELECT COUNT(*) as count FROM subscriptions WHERE status = 'active'").get() as any;
-    const mrr = db.prepare(`
-      SELECT SUM(p.price) as total 
-      FROM subscriptions s 
-      JOIN plans p ON s.plan_id = p.id 
-      WHERE s.status = 'active'
-    `).get() as any;
-    
-    const monthlyRevenue = db.prepare(`
-      SELECT (
-        COALESCE((SELECT SUM(price) FROM services WHERE strftime('%m', date) = strftime('%m', 'now')), 0) +
-        COALESCE((SELECT SUM(total_price) FROM sales WHERE strftime('%m', date) = strftime('%m', 'now')), 0)
-      ) as total
-    `).get() as any;
+  app.get("/api/stats", async (req, res) => {
+    try {
+      const { count: activeSubscribers } = await supabase
+        .from('subscriptions')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'active');
 
-    const productsLowStock = db.prepare("SELECT COUNT(*) as count FROM products WHERE stock <= min_stock").get() as any;
+      const { data: mrrData } = await supabase
+        .from('subscriptions')
+        .select('plan_id')
+        .eq('status', 'active');
+      
+      const { data: plans } = await supabase.from('plans').select('id, price');
+      
+      let mrr = 0;
+      if (mrrData && plans) {
+        mrrData.forEach(sub => {
+          const plan = plans.find(p => p.id === sub.plan_id);
+          if (plan) mrr += plan.price;
+        });
+      }
 
-    res.json({
-      activeSubscribers: activeSubscribers.count,
-      mrr: mrr.total || 0,
-      monthlyRevenue: monthlyRevenue.total || 0,
-      lowStockAlerts: productsLowStock.count
-    });
+      const now = new Date();
+      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+      const { data: services } = await supabase
+        .from('services')
+        .select('price')
+        .gte('date', firstDayOfMonth);
+      
+      const { data: sales } = await supabase
+        .from('sales')
+        .select('total_price')
+        .gte('date', firstDayOfMonth);
+
+      const totalRevenue = (services?.reduce((acc, s) => acc + s.price, 0) || 0) + 
+                           (sales?.reduce((acc, s) => acc + s.total_price, 0) || 0);
+
+      const { count: lowStockCount } = await supabase
+        .from('products')
+        .select('*', { count: 'exact', head: true });
+      // Note: Supabase doesn't easily support column-to-column comparison in basic select count
+      // We'll just fetch products and filter for simplicity in this demo, or use a better query
+      const { data: products } = await supabase.from('products').select('stock, min_stock');
+      const lowStockAlerts = products?.filter(p => p.stock <= p.min_stock).length || 0;
+
+      res.json({
+        activeSubscribers: activeSubscribers || 0,
+        mrr: mrr,
+        monthlyRevenue: totalRevenue,
+        lowStockAlerts: lowStockAlerts
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // Appointments CRUD
-  app.get("/api/appointments", (req, res) => {
-    const appointments = db.prepare(`
-      SELECT a.*, c.name as customer_name, c.phone as customer_phone, b.name as barber_name 
-      FROM appointments a 
-      JOIN customers c ON a.customer_id = c.id 
-      JOIN barbers b ON a.barber_id = b.id 
-      ORDER BY a.appointment_date ASC
-    `).all();
-    res.json(appointments);
+  app.get("/api/appointments", async (req, res) => {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(`
+        *,
+        customers (name, phone),
+        barbers (name)
+      `)
+      .order('appointment_date', { ascending: true });
+    
+    if (error) return res.status(500).json({ error: error.message });
+
+    const formatted = data?.map(a => ({
+      ...a,
+      customer_name: a.customers?.name,
+      customer_phone: a.customers?.phone,
+      barber_name: a.barbers?.name
+    }));
+    
+    res.json(formatted || []);
   });
 
-  app.post("/api/appointments", (req, res) => {
+  app.post("/api/appointments", async (req, res) => {
     const { customer_id, barber_id, service_type, appointment_date } = req.body;
-    const result = db.prepare("INSERT INTO appointments (customer_id, barber_id, service_type, appointment_date) VALUES (?, ?, ?, ?)").run(customer_id, barber_id, service_type, appointment_date);
-    res.json({ id: result.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('appointments')
+      .insert([{ customer_id, barber_id, service_type, appointment_date }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.put("/api/appointments/:id", (req, res) => {
+  app.put("/api/appointments/:id", async (req, res) => {
     const { status } = req.body;
-    db.prepare("UPDATE appointments SET status = ? WHERE id = ?").run(status, req.params.id);
+    const { error } = await supabase
+      .from('appointments')
+      .update({ status })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.delete("/api/appointments/:id", (req, res) => {
-    db.prepare("DELETE FROM appointments WHERE id = ?").run(req.params.id);
+  app.delete("/api/appointments/:id", async (req, res) => {
+    const { error } = await supabase
+      .from('appointments')
+      .delete()
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // Customers CRUD
-  app.get("/api/customers", (req, res) => {
-    const customers = db.prepare("SELECT * FROM customers").all();
-    res.json(customers);
+  app.get("/api/customers", async (req, res) => {
+    const { data, error } = await supabase.from('customers').select('*').order('name');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/customers", (req, res) => {
+  app.post("/api/customers", async (req, res) => {
     const { name, email, phone, cpf } = req.body;
-    try {
-      const result = db.prepare("INSERT INTO customers (name, email, phone, cpf) VALUES (?, ?, ?, ?)").run(name, email, phone, cpf);
-      res.json({ id: result.lastInsertRowid });
-    } catch (e: any) {
-      res.status(400).json({ error: "Email ou CPF já cadastrado" });
-    }
+    const { data, error } = await supabase
+      .from('customers')
+      .insert([{ name, email, phone, cpf }])
+      .select();
+    
+    if (error) return res.status(400).json({ error: "Email ou CPF já cadastrado" });
+    res.json({ id: data[0].id });
   });
 
-  app.put("/api/customers/:id", (req, res) => {
+  app.put("/api/customers/:id", async (req, res) => {
     const { name, email, phone, cpf } = req.body;
-    db.prepare("UPDATE customers SET name = ?, email = ?, phone = ?, cpf = ? WHERE id = ?")
-      .run(name, email, phone, cpf, req.params.id);
+    const { error } = await supabase
+      .from('customers')
+      .update({ name, email, phone, cpf })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // POS (Caixa) - Manual Subscription
-  app.post("/api/pos/subscribe", (req, res) => {
+  app.post("/api/pos/subscribe", async (req, res) => {
     const { customerEmail, planId } = req.body;
-    const plan = db.prepare("SELECT * FROM plans WHERE id = ?").get(planId) as any;
+    const { data: plan } = await supabase.from('plans').select('*').eq('id', planId).single();
     if (!plan) return res.status(404).json({ error: "Plano não encontrado" });
 
-    db.prepare("INSERT INTO subscriptions (id, customer_email, plan_id, status) VALUES (?, ?, ?, ?)")
-      .run(`manual_${Date.now()}`, customerEmail, planId, 'active');
+    const { error } = await supabase
+      .from('subscriptions')
+      .insert([{ 
+        id: `manual_${Date.now()}`, 
+        customer_email: customerEmail, 
+        plan_id: planId, 
+        status: 'active' 
+      }]);
     
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // Reports
-  app.get("/api/reports/margins", (req, res) => {
-    const margins = db.prepare(`
-      SELECT name, cost, price, (price - cost) as margin, 
-             ROUND(((price - cost) / price) * 100, 2) as margin_percent
-      FROM products
-    `).all();
+  app.get("/api/reports/margins", async (req, res) => {
+    const { data, error } = await supabase.from('products').select('name, cost, price');
+    if (error) return res.status(500).json({ error: error.message });
+    
+    const margins = data.map(p => ({
+      ...p,
+      margin: p.price - p.cost,
+      margin_percent: (((p.price - p.cost) / p.price) * 100).toFixed(2)
+    }));
     res.json(margins);
   });
 
-  app.get("/api/reports/productivity", (req, res) => {
-    const productivity = db.prepare(`
-      SELECT b.name, COUNT(s.id) as total_services, SUM(s.price) as total_revenue, SUM(s.commission_amount) as total_commission
-      FROM barbers b
-      LEFT JOIN services s ON b.id = s.barber_id
-      WHERE b.active = 1
-      GROUP BY b.id
-    `).all();
-    res.json(productivity);
+  app.get("/api/reports/productivity", async (req, res) => {
+    const { data: barbers } = await supabase.from('barbers').select('*').eq('active', true);
+    const { data: services } = await supabase.from('services').select('*');
+    
+    const productivity = barbers?.map(b => {
+      const bServices = services?.filter(s => s.barber_id === b.id) || [];
+      return {
+        name: b.name,
+        total_services: bServices.length,
+        total_revenue: bServices.reduce((acc, s) => acc + s.price, 0),
+        total_commission: bServices.reduce((acc, s) => acc + s.commission_amount, 0)
+      };
+    });
+    res.json(productivity || []);
   });
 
-  app.get("/api/reports/analytics", (req, res) => {
-    const ticketMedio = db.prepare(`
-      SELECT 
-        (SELECT AVG(total_price) FROM (
-          SELECT total_price FROM sales
-          UNION ALL
-          SELECT price as total_price FROM services
-        )) as avg_ticket,
-        (SELECT COUNT(*) FROM customers) as total_customers,
-        (SELECT COUNT(*) FROM subscriptions WHERE status = 'active') as active_plans
-    `).get() as any;
-    res.json(ticketMedio);
+  app.get("/api/reports/analytics", async (req, res) => {
+    const { data: sales } = await supabase.from('sales').select('total_price');
+    const { data: services } = await supabase.from('services').select('price');
+    const { count: totalCustomers } = await supabase.from('customers').select('*', { count: 'exact', head: true });
+    const { count: activePlans } = await supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'active');
+
+    const allTransactions = [...(sales?.map(s => s.total_price) || []), ...(services?.map(s => s.price) || [])];
+    const avgTicket = allTransactions.length > 0 ? allTransactions.reduce((acc, v) => acc + v, 0) / allTransactions.length : 0;
+
+    res.json({
+      avg_ticket: avgTicket,
+      total_customers: totalCustomers || 0,
+      active_plans: activePlans || 0
+    });
   });
 
   // Barbers CRUD
-  app.get("/api/barbers", (req, res) => {
-    const barbers = db.prepare("SELECT * FROM barbers WHERE active = 1").all();
-    res.json(barbers);
+  app.get("/api/barbers", async (req, res) => {
+    const { data, error } = await supabase.from('barbers').select('*').eq('active', true).order('name');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/barbers", (req, res) => {
+  app.post("/api/barbers", async (req, res) => {
     const { name, specialty, commission_rate } = req.body;
-    const result = db.prepare("INSERT INTO barbers (name, specialty, commission_rate) VALUES (?, ?, ?)").run(name, specialty, commission_rate);
-    res.json({ id: result.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('barbers')
+      .insert([{ name, specialty, commission_rate, active: true }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.put("/api/barbers/:id", (req, res) => {
+  app.put("/api/barbers/:id", async (req, res) => {
     const { name, specialty, commission_rate } = req.body;
-    db.prepare("UPDATE barbers SET name = ?, specialty = ?, commission_rate = ? WHERE id = ?")
-      .run(name, specialty, commission_rate, req.params.id);
+    const { error } = await supabase
+      .from('barbers')
+      .update({ name, specialty, commission_rate })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.delete("/api/barbers/:id", (req, res) => {
-    db.prepare("UPDATE barbers SET active = 0 WHERE id = ?").run(req.params.id);
+  app.delete("/api/barbers/:id", async (req, res) => {
+    const { error } = await supabase
+      .from('barbers')
+      .update({ active: false })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // Products CRUD
-  app.get("/api/products", (req, res) => {
-    const products = db.prepare("SELECT * FROM products").all();
-    res.json(products);
+  app.get("/api/products", async (req, res) => {
+    const { data, error } = await supabase.from('products').select('*').order('name');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/products", (req, res) => {
+  app.post("/api/products", async (req, res) => {
     const { name, cost, price, stock, min_stock } = req.body;
-    const result = db.prepare("INSERT INTO products (name, cost, price, stock, min_stock) VALUES (?, ?, ?, ?, ?)").run(name, cost, price, stock, min_stock);
-    res.json({ id: result.lastInsertRowid });
+    const { data, error } = await supabase
+      .from('products')
+      .insert([{ name, cost, price, stock, min_stock }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ id: data[0].id });
   });
 
-  app.put("/api/products/:id", (req, res) => {
+  app.put("/api/products/:id", async (req, res) => {
     const { name, cost, price, stock, min_stock } = req.body;
-    db.prepare("UPDATE products SET name = ?, cost = ?, price = ?, stock = ?, min_stock = ? WHERE id = ?")
-      .run(name, cost, price, stock, min_stock, req.params.id);
+    const { error } = await supabase
+      .from('products')
+      .update({ name, cost, price, stock, min_stock })
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.delete("/api/products/:id", (req, res) => {
-    db.prepare("DELETE FROM products WHERE id = ?").run(req.params.id);
+  app.delete("/api/products/:id", async (req, res) => {
+    const { error } = await supabase
+      .from('products')
+      .delete()
+      .eq('id', req.params.id);
+    
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // POS (Caixa)
-  app.post("/api/pos/sale", (req, res) => {
+  app.post("/api/pos/sale", async (req, res) => {
     const { productId, quantity } = req.body;
-    const product = db.prepare("SELECT * FROM products WHERE id = ?").get(productId) as any;
+    const { data: product } = await supabase.from('products').select('*').eq('id', productId).single();
     
     if (!product || product.stock < quantity) {
       return res.status(400).json({ error: "Estoque insuficiente" });
@@ -216,60 +353,74 @@ async function startServer() {
 
     const totalPrice = product.price * quantity;
     
-    const transaction = db.transaction(() => {
-      db.prepare("UPDATE products SET stock = stock - ? WHERE id = ?").run(quantity, productId);
-      db.prepare("INSERT INTO sales (product_id, quantity, total_price) VALUES (?, ?, ?)").run(productId, quantity, totalPrice);
-    });
+    await supabase.from('products').update({ stock: product.stock - quantity }).eq('id', productId);
+    await supabase.from('sales').insert([{ product_id: productId, quantity, total_price: totalPrice }]);
     
-    transaction();
     res.json({ success: true });
   });
 
-  app.post("/api/pos/service", (req, res) => {
+  app.post("/api/pos/service", async (req, res) => {
     const { barberId, customerName, serviceType, price } = req.body;
-    const barber = db.prepare("SELECT * FROM barbers WHERE id = ?").get(barberId) as any;
+    const { data: barber } = await supabase.from('barbers').select('*').eq('id', barberId).single();
     
     if (!barber) return res.status(404).json({ error: "Barbeiro não encontrado" });
 
     const commissionAmount = price * barber.commission_rate;
     
-    db.prepare("INSERT INTO services (barber_id, customer_name, service_type, price, commission_amount) VALUES (?, ?, ?, ?, ?)")
-      .run(barberId, customerName, serviceType, price, commissionAmount);
+    const { error } = await supabase.from('services').insert([{
+      barber_id: barberId,
+      customer_name: customerName,
+      service_type: serviceType,
+      price,
+      commission_amount: commissionAmount
+    }]);
     
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // Customers / Subscriptions
-  app.get("/api/subscriptions", (req, res) => {
-    const subs = db.prepare(`
-      SELECT s.*, p.name as plan_name, p.price as plan_price 
-      FROM subscriptions s 
-      JOIN plans p ON s.plan_id = p.id
-      ORDER BY s.created_at DESC
-    `).all();
-    res.json(subs);
+  app.get("/api/subscriptions", async (req, res) => {
+    const { data, error } = await supabase
+      .from('subscriptions')
+      .select('*, plans(name, price)')
+      .order('created_at', { ascending: false });
+    
+    if (error) return res.status(500).json({ error: error.message });
+
+    const formatted = data?.map(s => ({
+      ...s,
+      plan_name: (s as any).plans?.name,
+      plan_price: (s as any).plans?.price
+    }));
+    
+    res.json(formatted || []);
   });
 
   // Detailed Stats for Charts
-  app.get("/api/stats/revenue", (req, res) => {
-    const revenueData = db.prepare(`
-      SELECT strftime('%d/%m', date) as label, SUM(total_price) as value
-      FROM (
-        SELECT date, total_price FROM sales
-        UNION ALL
-        SELECT date, price as total_price FROM services
-      )
-      WHERE date >= date('now', '-7 days')
-      GROUP BY label
-      ORDER BY date ASC
-    `).all();
+  app.get("/api/stats/revenue", async (req, res) => {
+    const { data: sales } = await supabase.from('sales').select('date, total_price').gte('date', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    const { data: services } = await supabase.from('services').select('date, price').gte('date', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    
+    const combined = [
+      ...(sales?.map(s => ({ date: s.date.split('T')[0], value: s.total_price })) || []),
+      ...(services?.map(s => ({ date: s.date.split('T')[0], value: s.price })) || [])
+    ];
+
+    const grouped: Record<string, number> = {};
+    combined.forEach(item => {
+      const label = item.date.split('-').reverse().slice(0, 2).join('/'); // DD/MM
+      grouped[label] = (grouped[label] || 0) + item.value;
+    });
+
+    const revenueData = Object.entries(grouped).map(([label, value]) => ({ label, value }));
     res.json(revenueData);
   });
 
   // Stripe Checkout
   app.post("/api/create-checkout-session", async (req, res) => {
     const { planId, email } = req.body;
-    const plan = db.prepare("SELECT * FROM plans WHERE id = ?").get(planId) as any;
+    const { data: plan } = await supabase.from('plans').select('*').eq('id', planId).single();
 
     if (!plan) return res.status(404).json({ error: "Plan not found" });
 
@@ -303,15 +454,83 @@ async function startServer() {
   });
 
   // Webhook (Simplified for demo)
-  app.post("/api/webhook", (req, res) => {
+  app.post("/api/webhook", async (req, res) => {
     const event = req.body;
     // In a real app, verify Stripe signature
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
-      db.prepare("INSERT INTO subscriptions (id, customer_email, plan_id, status, stripe_subscription_id) VALUES (?, ?, ?, ?, ?)")
-        .run(session.id, session.customer_email, "premium", "active", session.subscription);
+      await supabase.from('subscriptions').insert([{
+        id: session.id,
+        customer_email: session.customer_email,
+        plan_id: "premium", // Simplified
+        status: "active",
+        stripe_subscription_id: session.subscription
+      }]);
     }
     res.json({ received: true });
+  });
+
+  // --- Advanced Financial Routes ---
+
+  // Expenses CRUD
+  app.get("/api/expenses", async (req, res) => {
+    const { data } = await supabase.from('expenses').select('*').order('date', { ascending: false });
+    res.json(data || []);
+  });
+
+  app.post("/api/expenses", async (req, res) => {
+    const { data, error } = await supabase.from('expenses').insert([req.body]).select();
+    res.json(data ? data[0] : { error });
+  });
+
+  app.delete("/api/expenses/:id", async (req, res) => {
+    await supabase.from('expenses').delete().eq('id', req.params.id);
+    res.json({ success: true });
+  });
+
+  // DRE (Lucro Real)
+  app.get("/api/reports/financial", async (req, res) => {
+    const { data: services } = await supabase.from('services').select('price, commission_amount');
+    const { data: sales } = await supabase.from('sales').select('total_price');
+    const { data: expenses } = await supabase.from('expenses').select('amount');
+    
+    const revenue = (services?.reduce((acc, s) => acc + s.price, 0) || 0) + 
+                    (sales?.reduce((acc, s) => acc + s.total_price, 0) || 0);
+    
+    const commissions = services?.reduce((acc, s) => acc + s.commission_amount, 0) || 0;
+    const totalExpenses = (expenses?.reduce((acc, e) => acc + e.amount, 0) || 0) + commissions;
+    
+    res.json({
+      revenue,
+      expenses: totalExpenses,
+      profit: revenue - totalExpenses,
+      margin: revenue > 0 ? ((revenue - totalExpenses) / revenue) * 100 : 0
+    });
+  });
+
+  // --- Public Booking Routes ---
+
+  app.get("/api/public/barbers", async (req, res) => {
+    const { data } = await supabase.from('barbers').select('id, name, specialty, photo_url').eq('active', true);
+    res.json(data || []);
+  });
+
+  app.get("/api/public/available-slots", async (req, res) => {
+    const { barberId, date } = req.query;
+    // Lógica simplificada: 09:00 às 18:00, de 1 em 1 hora
+    const slots = ["09:00", "10:00", "11:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
+    
+    const { data: appointments } = await supabase
+      .from('appointments')
+      .select('appointment_date')
+      .eq('barber_id', barberId)
+      .gte('appointment_date', `${date}T00:00:00`)
+      .lte('appointment_date', `${date}T23:59:59`);
+    
+    const bookedHours = appointments?.map(a => new Date(a.appointment_date).getHours().toString().padStart(2, '0') + ":00") || [];
+    const available = slots.filter(s => !bookedHours.includes(s));
+    
+    res.json(available);
   });
 
   // Vite middleware for development
