@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import dotenv from "dotenv";
+import { google } from "googleapis";
 
 dotenv.config();
 
@@ -10,13 +11,33 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_mock", {
   apiVersion: "2025-01-27.acacia" as any,
 });
 
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn("AVISO: STRIPE_SECRET_KEY não encontrada nos segredos. O checkout usará o modo de simulação (mock).");
+} else {
+  // Test Stripe connection
+  stripe.balance.retrieve()
+    .then(() => console.log("Stripe conectada e validada com sucesso."))
+    .catch((err) => console.error("ERRO: STRIPE_SECRET_KEY parece inválida ou expirada:", err.message));
+}
+
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : undefined)
+);
+
+// Helper to get redirect URI for display
+const getGoogleRedirectUri = () => {
+  return process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "URL não configurada (defina APP_URL)");
+};
+
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  const PORT = 3000; // Forçamos a porta 3000 para coincidir com o fly.toml
 
   app.use(express.json());
 
@@ -29,10 +50,30 @@ async function startServer() {
       if (error) throw error;
       
       if (data && data.length > 0) {
-        return res.json(data.map((p: any) => ({ 
-          ...p, 
-          benefits: typeof p.benefits === 'string' ? JSON.parse(p.benefits) : p.benefits 
-        })));
+        const plansWithPrices = await Promise.all(data.map(async (p: any) => {
+          const plan = { 
+            ...p, 
+            benefits: typeof p.benefits === 'string' ? JSON.parse(p.benefits) : p.benefits 
+          };
+
+          // Se o plano tem produto mas não tem preço, tenta buscar na Stripe
+          if (plan.stripe_product_id && !plan.stripe_price_id && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('mock')) {
+            try {
+              const prices = await stripe.prices.list({
+                product: plan.stripe_product_id,
+                active: true,
+                limit: 1
+              });
+              if (prices.data.length > 0) {
+                plan.stripe_price_id = prices.data[0].id;
+              }
+            } catch (e) {
+              console.error(`Erro ao buscar preço para produto ${plan.stripe_product_id}:`, e);
+            }
+          }
+          return plan;
+        }));
+        return res.json(plansWithPrices);
       }
     } catch (e) {
       console.error("Erro ao buscar planos do Supabase, usando fallback");
@@ -40,18 +81,77 @@ async function startServer() {
 
     // Fallback plans
     const fallbackPlans = [
-      { id: 'basic', name: 'Plano Basic', price: 89, description: 'Praticidade e economia para o dia a dia.', benefits: ['2 cortes por mês', '1 barba', '5% desconto em produtos'] },
-      { id: 'premium', name: 'Plano Premium', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', benefits: ['4 cortes por mês', '2 barbas', 'Prioridade no agendamento', '10% desconto em produtos'] },
-      { id: 'vip', name: 'Plano VIP', price: 199, description: 'Experiência completa e ilimitada.', benefits: ['Corte ilimitado (1 por semana)', 'Barba ilimitada (1 por semana)', 'Atendimento prioritário', '15% desconto em produtos', 'Brinde mensal'] }
+      { id: 'basic', name: 'Plano Cabelo', price: 89, description: 'Praticidade e economia para o dia a dia.', benefits: ['2 cortes por mês', '5% desconto em produtos'], stripe_product_id: 'prod_U5ChGCW1JPH81t', stripe_price_id: '' },
+      { id: 'premium', name: 'Plano Barba', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', benefits: ['4 barbas por mês', 'Prioridade no agendamento', '10% desconto em produtos'], stripe_product_id: 'prod_U5Cjd5DEqm78PC', stripe_price_id: '' },
+      { id: 'vip', name: 'Plano Cabelo e Barba', price: 199, description: 'Experiência completa e ilimitada.', benefits: ['Corte ilimitado (1 por semana)', 'Barba ilimitada (1 por semana)', 'Atendimento prioritário', '15% desconto em produtos', 'Brinde mensal'], stripe_product_id: 'prod_U5Cky2xiJ6Fkb9', stripe_price_id: '' }
     ];
-    res.json(fallbackPlans);
+
+    const fallbackWithPrices = await Promise.all(fallbackPlans.map(async (plan) => {
+      if (plan.stripe_product_id && !plan.stripe_price_id && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('mock')) {
+        try {
+          const prices = await stripe.prices.list({
+            product: plan.stripe_product_id,
+            active: true,
+            limit: 1
+          });
+          if (prices.data.length > 0) {
+            plan.stripe_price_id = prices.data[0].id;
+          }
+        } catch (e) {
+          console.error(`Erro ao buscar preço fallback para produto ${plan.stripe_product_id}:`, e);
+        }
+      }
+      return plan;
+    }));
+
+    res.json(fallbackWithPrices);
   });
 
   app.put("/api/plans/:id", async (req, res) => {
-    const { name, price, description, benefits } = req.body;
+    const { name, price, description, benefits, stripe_product_id, stripe_price_id } = req.body;
+    const { id } = req.params;
+    
+    // Ensure benefits is an array
+    const benefitsArray = Array.isArray(benefits) ? benefits : [];
+    
+    try {
+      // Use upsert to handle cases where the plan might not exist in the DB yet (e.g. editing a fallback)
+      const { data, error } = await supabase
+        .from('plans')
+        .upsert({ 
+          id,
+          name, 
+          price, 
+          description, 
+          benefits: benefitsArray,
+          stripe_product_id,
+          stripe_price_id
+        }, { onConflict: 'id' })
+        .select();
+      
+      if (error) throw error;
+      res.json({ success: true, data: data?.[0] });
+    } catch (error: any) {
+      console.error("Erro ao atualizar plano:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/plans", async (req, res) => {
+    const { name, price, description, benefits, stripe_product_id, stripe_price_id } = req.body;
+    const { data, error } = await supabase
+      .from('plans')
+      .insert([{ name, price, description, benefits, stripe_product_id, stripe_price_id }])
+      .select();
+    
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data[0]);
+  });
+
+  app.delete("/api/plans/:id", async (req, res) => {
     const { error } = await supabase
       .from('plans')
-      .update({ name, price, description, benefits: JSON.stringify(benefits) })
+      .delete()
       .eq('id', req.params.id);
     
     if (error) return res.status(500).json({ error: error.message });
@@ -140,35 +240,160 @@ async function startServer() {
   });
 
   app.post("/api/appointments", async (req, res) => {
-    const { customer_id, barber_id, service_type, appointment_date } = req.body;
-    const { data, error } = await supabase
-      .from('appointments')
-      .insert([{ customer_id, barber_id, service_type, appointment_date }])
-      .select();
-    
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ id: data[0].id });
+    const { customer_id, barber_id, service_type, appointment_date, status } = req.body;
+    try {
+      const { data, error } = await supabase
+        .from('appointments')
+        .insert([{ customer_id, barber_id, service_type, appointment_date, status: status || 'pending' }])
+        .select();
+      
+      if (error) throw error;
+      
+      // Try to sync to Google Calendar immediately if connected
+      try {
+        const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+        if (config) {
+          const tokens = JSON.parse(config.value);
+          oauth2Client.setCredentials(tokens);
+          const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+          
+          const { data: fullApt } = await supabase
+            .from('appointments')
+            .select('*, customers(name), barbers(name)')
+            .eq('id', data[0].id)
+            .single();
+
+          if (fullApt) {
+            const start = new Date(fullApt.appointment_date);
+            const end = new Date(start.getTime() + 60 * 60 * 1000);
+            
+            const event = await calendar.events.insert({
+              calendarId: "primary",
+              requestBody: {
+                summary: `Corte: ${fullApt.customers?.name} com ${fullApt.barbers?.name}`,
+                description: `Serviço: ${fullApt.service_type}`,
+                start: { dateTime: start.toISOString() },
+                end: { dateTime: end.toISOString() },
+              },
+            });
+
+            if (event.data.id) {
+              await supabase.from('appointments').update({ google_event_id: event.data.id }).eq('id', data[0].id);
+            }
+          }
+        }
+      } catch (syncErr) {
+        console.error("Erro ao sincronizar agendamento com Google:", syncErr);
+      }
+
+      res.json({ id: data[0].id });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.put("/api/appointments/:id", async (req, res) => {
-    const { status } = req.body;
-    const { error } = await supabase
-      .from('appointments')
-      .update({ status })
-      .eq('id', req.params.id);
+    const { status, appointment_date, service_type, barber_id } = req.body;
+    const { id } = req.params;
     
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
+    try {
+      const { data: oldApt, error: fetchError } = await supabase.from('appointments').select('*').eq('id', id).single();
+      if (fetchError) throw fetchError;
+
+      const updateData: any = {};
+      if (status !== undefined) updateData.status = status;
+      if (appointment_date !== undefined) updateData.appointment_date = appointment_date;
+      if (service_type !== undefined) updateData.service_type = service_type;
+      if (barber_id !== undefined) updateData.barber_id = barber_id;
+
+      const { error } = await supabase
+        .from('appointments')
+        .update(updateData)
+        .eq('id', id);
+      
+      if (error) throw error;
+
+      // Sync update to Google Calendar
+      if (oldApt.google_event_id) {
+        try {
+          const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+          if (config) {
+            const tokens = JSON.parse(config.value);
+            oauth2Client.setCredentials(tokens);
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+            
+            const { data: updatedApt } = await supabase
+              .from('appointments')
+              .select('*, customers(name), barbers(name)')
+              .eq('id', id)
+              .single();
+
+            if (updatedApt) {
+              const start = new Date(updatedApt.appointment_date);
+              const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+              if (updatedApt.status === 'cancelled') {
+                try {
+                  await calendar.events.delete({ calendarId: "primary", eventId: oldApt.google_event_id });
+                } catch (e) {
+                  console.warn("Event already deleted or not found in Google Calendar");
+                }
+                await supabase.from('appointments').update({ google_event_id: null }).eq('id', id);
+              } else {
+                await calendar.events.patch({
+                  calendarId: "primary",
+                  eventId: oldApt.google_event_id,
+                  requestBody: {
+                    summary: `Corte: ${updatedApt.customers?.name} com ${updatedApt.barber_name || updatedApt.barbers?.name}`,
+                    description: `Serviço: ${updatedApt.service_type}`,
+                    start: { dateTime: start.toISOString() },
+                    end: { dateTime: end.toISOString() },
+                  },
+                });
+              }
+            }
+          }
+        } catch (syncErr) {
+          console.error("Erro ao atualizar agendamento no Google:", syncErr);
+        }
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.delete("/api/appointments/:id", async (req, res) => {
-    const { error } = await supabase
-      .from('appointments')
-      .delete()
-      .eq('id', req.params.id);
-    
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
+    const { id } = req.params;
+    try {
+      const { data: apt, error: fetchError } = await supabase.from('appointments').select('google_event_id').eq('id', id).single();
+      
+      // Delete from Google Calendar if exists
+      if (apt?.google_event_id) {
+        try {
+          const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+          if (config) {
+            const tokens = JSON.parse(config.value);
+            oauth2Client.setCredentials(tokens);
+            const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+            await calendar.events.delete({ calendarId: "primary", eventId: apt.google_event_id });
+          }
+        } catch (syncErr) {
+          console.error("Erro ao excluir agendamento no Google:", syncErr);
+        }
+      }
+
+      const { error } = await supabase
+        .from('appointments')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // Customers CRUD
@@ -180,13 +405,55 @@ async function startServer() {
 
   app.post("/api/customers", async (req, res) => {
     const { name, email, phone, cpf } = req.body;
-    const { data, error } = await supabase
-      .from('customers')
-      .insert([{ name, email, phone, cpf }])
-      .select();
     
-    if (error) return res.status(400).json({ error: "Email ou CPF já cadastrado" });
-    res.json({ id: data[0].id });
+    if (!name) return res.status(400).json({ error: "Nome é obrigatório" });
+
+    try {
+      // First, check if customer already exists by phone or email
+      if (phone || email) {
+        let query = supabase.from('customers').select('id');
+        if (phone && email) {
+          query = query.or(`phone.eq.${phone},email.eq.${email}`);
+        } else if (phone) {
+          query = query.eq('phone', phone);
+        } else {
+          query = query.eq('email', email);
+        }
+        
+        const { data: existing } = await query.maybeSingle();
+        if (existing) {
+          return res.json({ id: existing.id });
+        }
+      }
+
+      const { data, error } = await supabase
+        .from('customers')
+        .insert([{ name, email, phone, cpf }])
+        .select();
+      
+      if (error) {
+        console.error("Erro Supabase ao inserir cliente:", error);
+        if (error.code === '23505') {
+          // Fallback if the check above missed it due to race condition
+          const { data: existing } = await supabase.from('customers').select('id').or(`phone.eq.${phone},email.eq.${email}`).maybeSingle();
+          if (existing) return res.json({ id: existing.id });
+          return res.status(400).json({ error: "Email ou CPF já cadastrado" });
+        }
+        if (error.code === '42P01') {
+          return res.status(500).json({ error: "Tabela 'customers' não encontrada. Verifique se o banco de dados foi configurado corretamente." });
+        }
+        return res.status(500).json({ error: "Erro ao salvar cliente: " + error.message });
+      }
+      
+      if (!data || data.length === 0) {
+        return res.status(500).json({ error: "Erro ao criar cliente: nenhum dado retornado pelo banco." });
+      }
+      
+      res.json({ id: data[0].id });
+    } catch (err: any) {
+      console.error("Erro interno ao salvar cliente:", err);
+      res.status(500).json({ error: "Erro interno no servidor: " + err.message });
+    }
   });
 
   app.put("/api/customers/:id", async (req, res) => {
@@ -420,36 +687,87 @@ async function startServer() {
   // Stripe Checkout
   app.post("/api/create-checkout-session", async (req, res) => {
     const { planId, email } = req.body;
-    const { data: plan } = await supabase.from('plans').select('*').eq('id', planId).single();
-
-    if (!plan) return res.status(404).json({ error: "Plan not found" });
-
+    console.log(`Iniciando checkout para plano: ${planId}, email: ${email}`);
+    
+    let plan: any;
+    
     try {
-      const session = await stripe.checkout.sessions.create({
+      const { data: dbPlan } = await supabase.from('plans').select('*').eq('id', planId).single();
+      
+      if (dbPlan) {
+        plan = {
+          ...dbPlan,
+          benefits: typeof dbPlan.benefits === 'string' ? JSON.parse(dbPlan.benefits) : dbPlan.benefits
+        };
+      } else {
+        // Fallback mapping if not in DB
+        const fallbackPlans = [
+          { id: 'basic', name: 'Plano Cabelo', price: 89, description: 'Praticidade e economia para o dia a dia.', stripe_product_id: 'prod_U5ChGCW1JPH81t', stripe_price_id: '' },
+          { id: 'premium', name: 'Plano Barba', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', stripe_product_id: 'prod_U5Cjd5DEqm78PC', stripe_price_id: '' },
+          { id: 'vip', name: 'Plano Cabelo e Barba', price: 199, description: 'Experiência completa e ilimitada.', stripe_product_id: 'prod_U5Cky2xiJ6Fkb9', stripe_price_id: '' }
+        ];
+        plan = fallbackPlans.find(p => p.id === planId);
+      }
+
+      if (!plan) {
+        console.error(`Plano não encontrado: ${planId}`);
+        return res.status(404).json({ error: "Plan not found" });
+      }
+
+      const appUrl = process.env.APP_URL || (req.headers.origin as string) || `https://${req.get('host')}`;
+      console.log(`[Stripe] Iniciando checkout. APP_URL detectado: ${appUrl}`);
+
+      const lineItem: any = {
+        quantity: 1,
+      };
+
+      if (plan.stripe_price_id && plan.stripe_price_id.startsWith('price_')) {
+        console.log(`[Stripe] Usando Price ID: ${plan.stripe_price_id}`);
+        lineItem.price = plan.stripe_price_id;
+      } else {
+        console.log(`[Stripe] Montando price_data para plano: ${plan.name}`);
+        lineItem.price_data = {
+          currency: "brl",
+          unit_amount: Math.round(plan.price * 100),
+          recurring: { interval: "month" },
+        };
+
+        if (plan.stripe_product_id && plan.stripe_product_id.startsWith('prod_')) {
+          console.log(`[Stripe] Usando Product ID: ${plan.stripe_product_id}`);
+          lineItem.price_data.product = plan.stripe_product_id;
+        } else {
+          console.log(`[Stripe] Usando product_data dinâmico`);
+          lineItem.price_data.product_data = {
+            name: plan.name,
+            description: plan.description,
+          };
+        }
+      }
+
+      // Timeout para a chamada da Stripe
+      const stripePromise = stripe.checkout.sessions.create({
         payment_method_types: ["card"],
-        line_items: [
-          {
-            price_data: {
-              currency: "brl",
-              product_data: {
-                name: plan.name,
-                description: plan.description,
-              },
-              unit_amount: plan.price * 100,
-              recurring: { interval: "month" },
-            },
-            quantity: 1,
-          },
-        ],
+        line_items: [lineItem],
         mode: "subscription",
-        success_url: `${process.env.APP_URL}/success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.APP_URL}/plans`,
+        success_url: `${appUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${appUrl}/`,
         customer_email: email,
       });
 
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Timeout na comunicação com a Stripe")), 10000)
+      );
+
+      const session = await Promise.race([stripePromise, timeoutPromise]) as Stripe.Checkout.Session;
+
+      console.log(`[Stripe] Sessão criada com sucesso: ${session.id}`);
       res.json({ url: session.url });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      console.error("[Stripe] Erro detalhado:", error);
+      res.status(500).json({ 
+        error: error.message,
+        details: error.type === 'StripeAuthenticationError' ? 'Chave da Stripe inválida ou não configurada corretamente.' : 'Erro interno ao processar pagamento.'
+      });
     }
   });
 
@@ -531,6 +849,121 @@ async function startServer() {
     const available = slots.filter(s => !bookedHours.includes(s));
     
     res.json(available);
+  });
+
+  // --- Google Calendar Auth ---
+  app.get("/api/auth/google/config", async (req, res) => {
+    let connected = false;
+    try {
+      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+      if (config) {
+        const tokens = JSON.parse(config.value);
+        oauth2Client.setCredentials(tokens);
+        const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+        await calendar.calendarList.list({ maxResults: 1 });
+        connected = true;
+      }
+    } catch (e) {}
+
+    res.json({ 
+      redirectUri: getGoogleRedirectUri(),
+      hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
+      hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+      connected
+    });
+  });
+
+  app.get("/api/auth/google/url", (req, res) => {
+    const url = oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      scope: ["https://www.googleapis.com/auth/calendar.events"],
+      prompt: "consent"
+    });
+    res.json({ url });
+  });
+
+  app.get("/api/auth/google/callback", async (req, res) => {
+    const { code } = req.query;
+    try {
+      const { tokens } = await oauth2Client.getToken(code as string);
+      // In a real app, store these tokens in Supabase (e.g., in a 'settings' or 'barbers' table)
+      // For this demo, we'll just log them and send a success message
+      console.log("Google Tokens received:", tokens);
+      
+      // Store in Supabase (simplified: using a 'config' table or similar)
+      await supabase.from('config').upsert({ 
+        key: 'google_calendar_tokens', 
+        value: JSON.stringify(tokens) 
+      }, { onConflict: 'key' });
+
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener) {
+                window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/admin';
+              }
+            </script>
+            <p>Conexão com Google Calendar realizada com sucesso! Esta janela fechará automaticamente.</p>
+          </body>
+        </html>
+      `);
+    } catch (error: any) {
+      res.status(500).send("Erro na autenticação: " + error.message);
+    }
+  });
+
+  app.post("/api/calendar/sync", async (req, res) => {
+    try {
+      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+      if (!config) return res.status(401).json({ error: "Google Calendar não conectado" });
+
+      const tokens = JSON.parse(config.value);
+      oauth2Client.setCredentials(tokens);
+
+      const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
+      // Fetch appointments to sync (only those not already synced)
+      const { data: appointments } = await supabase
+        .from('appointments')
+        .select('*, customers(name), barbers(name)')
+        .eq('status', 'pending')
+        .is('google_event_id', null);
+
+      if (!appointments || appointments.length === 0) return res.json({ message: "Nenhum agendamento novo para sincronizar", count: 0 });
+
+      let count = 0;
+      for (const apt of appointments) {
+        try {
+          const start = new Date(apt.appointment_date);
+          const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour duration
+
+          const event = await calendar.events.insert({
+            calendarId: "primary",
+            requestBody: {
+              summary: `Corte: ${apt.customers?.name} com ${apt.barbers?.name}`,
+              description: `Serviço: ${apt.service_type}`,
+              start: { dateTime: start.toISOString() },
+              end: { dateTime: end.toISOString() },
+            },
+          });
+
+          if (event.data.id) {
+            await supabase.from('appointments').update({ google_event_id: event.data.id }).eq('id', apt.id);
+            count++;
+          }
+        } catch (e) {
+          console.error(`Erro ao sincronizar agendamento ${apt.id}:`, e);
+        }
+      }
+
+      res.json({ success: true, count });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // Vite middleware for development
