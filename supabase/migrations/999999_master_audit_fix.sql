@@ -1,8 +1,8 @@
 -- ============================================================
--- MASTER AUDIT FIX — MA Beard Style SaaS
--- Gerado em: 2026-03-19
+-- MASTER AUDIT FIX v2 — MA Beard Style SaaS
+-- Gerado em: 2026-03-19  |  Atualizado: 2026-03-19
 -- Seguro para rodar múltiplas vezes (idempotente)
--- Cobre: todas as tabelas, colunas, triggers updated_at, RLS
+-- Cobre: tabelas, colunas, triggers, RLS, índices de performance
 -- ============================================================
 
 -- ============================================================
@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS config (
   value      TEXT,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Adiciona updated_at caso a tabela existisse sem ela
+DO $$ BEGIN ALTER TABLE config ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
 -- 2. plans (planos de assinatura, sincronizados com Stripe)
 CREATE TABLE IF NOT EXISTS plans (
@@ -120,6 +123,12 @@ CREATE TABLE IF NOT EXISTS services_catalog (
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Colunas que podem estar faltando em instâncias antigas
+DO $$ BEGIN ALTER TABLE services_catalog ADD COLUMN description      TEXT;                          EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE services_catalog ADD COLUMN active           BOOLEAN NOT NULL DEFAULT TRUE;  EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE services_catalog ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 60;    EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE services_catalog ADD COLUMN updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
 -- Seed padrão — só insere se tabela estiver vazia
 INSERT INTO services_catalog (name, price, duration_minutes)
 SELECT name, price, duration_minutes FROM (VALUES
@@ -145,6 +154,8 @@ CREATE TABLE IF NOT EXISTS services (
 
 DO $$ BEGIN ALTER TABLE services ADD COLUMN payment_method TEXT DEFAULT 'dinheiro'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE services ADD COLUMN date TIMESTAMPTZ NOT NULL DEFAULT NOW(); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+-- Retroativo: garante que linhas antigas com date NULL não quebrem queries de range
+UPDATE services SET date = NOW() WHERE date IS NULL;
 
 -- 9. sales (vendas de produtos — PDV/caixa)
 CREATE TABLE IF NOT EXISTS sales (
@@ -158,6 +169,8 @@ CREATE TABLE IF NOT EXISTS sales (
 
 DO $$ BEGIN ALTER TABLE sales ADD COLUMN payment_method TEXT DEFAULT 'dinheiro'; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 DO $$ BEGIN ALTER TABLE sales ADD COLUMN date TIMESTAMPTZ NOT NULL DEFAULT NOW(); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+-- Retroativo: garante que linhas antigas com date NULL não quebrem queries de range
+UPDATE sales SET date = NOW() WHERE date IS NULL;
 
 -- 10. subscriptions (assinaturas de clientes — Stripe ou manual)
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -214,6 +227,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DO $$ BEGIN CREATE TRIGGER set_updated_at_config        BEFORE UPDATE ON config         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column(); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TRIGGER set_updated_at_plans          BEFORE UPDATE ON plans          FOR EACH ROW EXECUTE FUNCTION update_updated_at_column(); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TRIGGER set_updated_at_customers      BEFORE UPDATE ON customers      FOR EACH ROW EXECUTE FUNCTION update_updated_at_column(); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TRIGGER set_updated_at_barbers        BEFORE UPDATE ON barbers        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column(); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -296,7 +310,41 @@ DROP POLICY IF EXISTS "ma_anon_all"  ON expenses; CREATE POLICY "ma_anon_all"  O
 DROP POLICY IF EXISTS "ma_auth_all"  ON expenses; CREATE POLICY "ma_auth_all"  ON expenses FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- ============================================================
--- SEÇÃO 4 — BUCKET DE STORAGE (instruções)
+-- SEÇÃO 4 — ÍNDICES DE PERFORMANCE
+-- Baseados nas queries reais do server.ts (range, eq, filtros)
+-- ============================================================
+
+-- appointments: queries por barbeiro + data (agenda diária/semanal)
+CREATE INDEX IF NOT EXISTS appointments_barber_date_idx
+  ON appointments (barber_id, appointment_date);
+
+-- appointments: queries por status + google_event_id (sync GCal)
+CREATE INDEX IF NOT EXISTS appointments_status_gcal_idx
+  ON appointments (status, google_event_id)
+  WHERE google_event_id IS NOT NULL;
+
+-- subscriptions: filtro por status (booking gate e painel admin)
+CREATE INDEX IF NOT EXISTS subscriptions_status_idx
+  ON subscriptions (status);
+
+-- subscriptions: lookup por email no booking gate
+CREATE INDEX IF NOT EXISTS subscriptions_email_idx
+  ON subscriptions (customer_email);
+
+-- services: queries de range por data (DRE e relatórios)
+CREATE INDEX IF NOT EXISTS services_date_idx
+  ON services (date);
+
+-- sales: queries de range por data (DRE e relatórios)
+CREATE INDEX IF NOT EXISTS sales_date_idx
+  ON sales (date);
+
+-- stock_movements: lookup por produto (histórico de movimentação)
+CREATE INDEX IF NOT EXISTS stock_movements_product_idx
+  ON stock_movements (product_id);
+
+-- ============================================================
+-- SEÇÃO 5 — BUCKET DE STORAGE (instruções)
 -- ============================================================
 -- Execute no painel Storage do Supabase:
 --   Criar bucket público chamado: videos
