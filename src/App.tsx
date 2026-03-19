@@ -1294,15 +1294,46 @@ const PlansManager = () => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [editing, setEditing] = useState<Plan | null>(null);
 
-  const fetchPlans = () => fetch('/api/plans').then(res => res.json()).then(setPlans);
+  const createEmptyPlan = (): Plan => ({
+    id: '',
+    name: '',
+    price: 0,
+    description: '',
+    benefits: [''],
+  });
+
+  const toPlanId = (name: string) =>
+    name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '') || `plano-${Date.now()}`;
+
+  const fetchPlans = () =>
+    fetch('/api/plans')
+      .then(res => res.json())
+      .then(data => setPlans(Array.isArray(data) ? data : []))
+      .catch(() => setPlans([]));
+
   useEffect(() => { fetchPlans(); }, []);
 
   const handleSave = async () => {
     if (!editing) return;
-    await fetch(`/api/plans/${editing.id}`, {
+
+    const sanitizedPlan: Plan = {
+      ...editing,
+      id: editing.id || toPlanId(editing.name),
+      name: editing.name?.trim() || 'Novo Plano',
+      description: editing.description?.trim() || '',
+      benefits: (editing.benefits || []).map(b => b.trim()).filter(Boolean),
+      price: Number(editing.price) || 0,
+    };
+
+    await fetch(`/api/plans/${sanitizedPlan.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editing)
+      body: JSON.stringify(sanitizedPlan)
     });
     setEditing(null);
     fetchPlans();
@@ -1328,6 +1359,34 @@ const PlansManager = () => {
 
   return (
     <div className="space-y-8">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-medium">Cadastro de Planos</h3>
+          <p className="text-sm text-gray-500">Gerencie planos e benefícios da assinatura.</p>
+        </div>
+        <button
+          onClick={() => setEditing(createEmptyPlan())}
+          className="px-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors inline-flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> Novo Plano
+        </button>
+      </div>
+
+      {plans.length === 0 ? (
+        <div className="border border-white/10 bg-zinc-900/40 rounded-[2.5rem] p-10 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-white/5 mx-auto mb-5 flex items-center justify-center">
+            <Crown className="w-7 h-7 text-gray-300" />
+          </div>
+          <h4 className="text-2xl font-light mb-2">Nenhum plano cadastrado.</h4>
+          <p className="text-gray-500 mb-8">Crie o primeiro plano para liberar assinaturas no checkout.</p>
+          <button
+            onClick={() => setEditing(createEmptyPlan())}
+            className="px-8 py-4 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors inline-flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" /> Criar Primeiro Plano
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {plans.map((plan) => (
           <div key={plan.id} className="bg-zinc-900/40 border border-white/5 p-8 rounded-[2.5rem] relative group">
@@ -1349,7 +1408,7 @@ const PlansManager = () => {
             <div className="h-px w-full bg-white/10 mb-6" />
             
             <ul className="space-y-3">
-              {plan.benefits.map((benefit, i) => (
+              {(plan.benefits || []).map((benefit, i) => (
                 <li key={i} className="flex items-start gap-3 text-sm text-gray-300">
                   <Check className="w-4 h-4 mt-0.5 text-emerald-500 shrink-0" />
                   <span>{benefit}</span>
@@ -1359,11 +1418,12 @@ const PlansManager = () => {
           </div>
         ))}
       </div>
+      )}
 
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-2xl shadow-2xl my-8">
-            <h3 className="text-xl font-medium mb-6 flex items-center gap-2"><Crown className="w-5 h-5" /> Editar Plano: {editing.name}</h3>
+            <h3 className="text-xl font-medium mb-6 flex items-center gap-2"><Crown className="w-5 h-5" /> {editing.id ? `Editar Plano: ${editing.name}` : 'Criar Novo Plano'}</h3>
             
             <div className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1412,7 +1472,7 @@ const PlansManager = () => {
               <div className="flex gap-4 pt-4 border-t border-white/5">
                 <button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 hover:bg-white/10 transition-colors font-bold text-sm">Cancelar</button>
                 <button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black hover:bg-gray-200 transition-colors font-bold text-sm flex items-center justify-center gap-2">
-                  <Save className="w-4 h-4" /> Salvar Alterações
+                  <Save className="w-4 h-4" /> {editing.id ? 'Salvar Alterações' : 'Criar Plano'}
                 </button>
               </div>
             </div>
