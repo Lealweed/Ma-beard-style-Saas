@@ -626,10 +626,10 @@ async function startServer() {
   });
 
   app.post("/api/barbers", async (req, res) => {
-    const { name, specialty, commission_rate } = req.body;
+    const { name, specialty, commission_rate, phone, cpf, address, photo_url } = req.body;
     const { data, error } = await supabase
       .from('barbers')
-      .insert([{ name, specialty, commission_rate, active: true }])
+      .insert([{ name, specialty, commission_rate, phone, cpf, address, photo_url, active: true }])
       .select();
     
     if (error) return res.status(500).json({ error: error.message });
@@ -637,10 +637,10 @@ async function startServer() {
   });
 
   app.put("/api/barbers/:id", async (req, res) => {
-    const { name, specialty, commission_rate } = req.body;
+    const { name, specialty, commission_rate, phone, cpf, address, photo_url } = req.body;
     const { error } = await supabase
       .from('barbers')
-      .update({ name, specialty, commission_rate })
+      .update({ name, specialty, commission_rate, phone, cpf, address, photo_url })
       .eq('id', req.params.id);
     
     if (error) return res.status(500).json({ error: error.message });

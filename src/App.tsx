@@ -42,6 +42,7 @@ interface Barber {
   name: string;
   specialty: string;
   commission_rate: number;
+  photo_url?: string;
   phone?: string;
   cpf?: string;
   address?: string;
@@ -810,28 +811,96 @@ const POSSystem = () => {
 const BarberManager = () => {
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [editing, setEditing] = useState<Partial<Barber> | null>(null);
+  const [photoStatus, setPhotoStatus] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const fetchBarbers = () => fetch('/api/barbers').then(res => res.json()).then(setBarbers);
   useEffect(() => { fetchBarbers(); }, []);
+  const handlePhotoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !editing) return;
+
+    if (!isSupabaseConfigured) {
+      setPhotoStatus({ type: 'error', message: 'Supabase não configurado para upload da foto.' });
+      return;
+    }
+
+    setUploadingPhoto(true);
+    setPhotoStatus({ type: 'info', message: 'Enviando foto do barbeiro...' });
+
+    try {
+      const extension = file.name.split('.').pop() || 'jpg';
+      const safeName = (editing.name || 'barbeiro')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+      const filePath = `${safeName || 'barbeiro'}-${Date.now()}.${extension}`;
+
+      const { error } = await supabase.storage.from('barbers').upload(filePath, file, { upsert: true });
+      if (error) throw error;
+
+      const { data } = supabase.storage.from('barbers').getPublicUrl(filePath);
+      setEditing({ ...editing, photo_url: data.publicUrl });
+      setPhotoStatus({ type: 'success', message: 'Foto enviada com sucesso.' });
+    } catch (error: any) {
+      setPhotoStatus({
+        type: 'error',
+        message: error?.message?.includes('not found')
+          ? 'Bucket "barbers" não existe. Crie um bucket público com esse nome no Supabase Storage.'
+          : `Erro ao enviar foto: ${error.message || 'falha desconhecida'}`,
+      });
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
   const handleSave = async () => {
     const method = editing?.id ? 'PUT' : 'POST';
     const url = editing?.id ? `/api/barbers/${editing.id}` : '/api/barbers';
     await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
-    setEditing(null); fetchBarbers();
+    setEditing(null);
+    setPhotoStatus(null);
+    fetchBarbers();
   };
   const handleDelete = async (id: number) => { if (!confirm('Deseja realmente excluir este barbeiro?')) return; await fetch(`/api/barbers/${id}`, { method: 'DELETE' }); fetchBarbers(); };
   return (
     <div className="space-y-8">
-      <div className="flex justify-end"><button onClick={() => setEditing({ name: '', specialty: '', commission_rate: 0.4, phone: '', cpf: '', address: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Barbeiro</button></div>
+      <div className="flex justify-end"><button onClick={() => { setEditing({ name: '', specialty: '', commission_rate: 0.4, phone: '', cpf: '', address: '', photo_url: '' }); setPhotoStatus(null); }} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Barbeiro</button></div>
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
           <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Nome</th><th className="px-8 py-6 font-medium">Especialidade</th><th className="px-8 py-6 font-medium">Contato</th><th className="px-8 py-6 font-medium">Comissão</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
-          <tbody className="divide-y divide-white/5">{barbers.map((barber) => (<tr key={barber.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white">{barber.name}</td><td className="px-8 py-6">{barber.specialty}</td><td className="px-8 py-6 text-gray-500">{barber.phone || 'Sem telefone'}</td><td className="px-8 py-6">{barber.commission_rate * 100}%</td><td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(barber)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(barber.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td></tr>))}</tbody>
+          <tbody className="divide-y divide-white/5">{barbers.map((barber) => (<tr key={barber.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white"><div className="flex items-center gap-3"><div className="w-10 h-10 rounded-full overflow-hidden bg-white/10 border border-white/10 shrink-0">{barber.photo_url ? <img src={barber.photo_url} alt={barber.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-xs font-bold text-gray-300">{barber.name?.charAt(0) || '?'}</div>}</div><span>{barber.name}</span></div></td><td className="px-8 py-6">{barber.specialty}</td><td className="px-8 py-6 text-gray-500">{barber.phone || 'Sem telefone'}</td><td className="px-8 py-6">{barber.commission_rate * 100}%</td><td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => { setEditing(barber); setPhotoStatus(null); }} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(barber.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td></tr>))}</tbody>
         </table>
       </div>
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-2xl shadow-2xl overflow-y-auto max-h-[90vh]">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Barbeiro' : 'Novo Barbeiro'}</h3>
+            <div className="mb-6 p-4 rounded-xl border border-white/10 bg-black/30">
+              <p className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3">Foto de Perfil</p>
+              <div className="flex flex-col md:flex-row gap-4 md:items-center">
+                <div className="w-20 h-20 rounded-full overflow-hidden border border-white/10 bg-white/5 shrink-0">
+                  {editing.photo_url ? (
+                    <img src={editing.photo_url} alt={editing.name || 'Barbeiro'} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-sm font-bold text-gray-400">
+                      {editing.name?.charAt(0) || '?'}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 space-y-3">
+                  <input placeholder="URL pública da foto" value={editing.photo_url || ''} onChange={e => setEditing({ ...editing, photo_url: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                  <label className={cn('inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors', uploadingPhoto ? 'bg-white/10 text-gray-400 cursor-not-allowed' : 'bg-white text-black hover:bg-gray-200 cursor-pointer')}>
+                    {uploadingPhoto ? 'Enviando foto...' : 'Upload da foto'}
+                    <input type="file" accept="image/*" className="hidden" onChange={handlePhotoUpload} disabled={uploadingPhoto} />
+                  </label>
+                  <p className="text-[11px] text-gray-500">A mesma foto será usada no fluxo público de escolha do barbeiro (agendamento).</p>
+                </div>
+              </div>
+              {photoStatus && (
+                <div className={cn('mt-3 text-xs rounded-lg p-3 border', photoStatus.type === 'success' && 'text-emerald-400 border-emerald-500/20 bg-emerald-500/10', photoStatus.type === 'error' && 'text-red-400 border-red-500/20 bg-red-500/10', photoStatus.type === 'info' && 'text-blue-400 border-blue-500/20 bg-blue-500/10')}>
+                  {photoStatus.message}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-4">
                 <label className="text-xs font-bold uppercase tracking-widest text-gray-500">Dados Profissionais</label>
