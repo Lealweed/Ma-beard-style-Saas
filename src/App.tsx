@@ -365,67 +365,15 @@ const LandingPage = () => {
         </div>
       </section>
 
-      <Testimonials />
-    </div>
-  );
-};
-
-const Testimonials = () => {
-  const defaultReviews = [
-    { author_name: 'João Silva', rating: 5, text: 'Melhor barbearia da cidade! Atendimento impecável e ambiente muito agradável.' },
-    { author_name: 'Carlos Mendes', rating: 5, text: 'Sou assinante do plano VIP e não me arrependo. Praticidade total e corte sempre em dia.' },
-    { author_name: 'Roberto Alves', rating: 5, text: 'Profissionais excelentes. O cuidado com a barba é sensacional, recomendo a todos.' },
-    { author_name: 'Felipe Costa', rating: 4, text: 'Ótimo serviço, cerveja gelada e sinuca enquanto espera. Muito bom.' },
-    { author_name: 'Lucas Pereira', rating: 5, text: 'Lugar fantástico! O aplicativo de agendamento facilita muito a vida.' }
-  ];
-
-  const [reviews, setReviews] = useState(defaultReviews);
-
-  useEffect(() => {
-    const saved = localStorage.getItem('ma_reviews');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.length > 0) {
-          setReviews(parsed);
-        }
-      } catch (e) {
-        console.error('Error parsing reviews', e);
-      }
-    }
-  }, []);
-
-  // Duplicate reviews to create a seamless infinite loop
-  const displayReviews = [...reviews, ...reviews, ...reviews, ...reviews];
-
-  return (
-    <section className="py-20 bg-black overflow-hidden border-t border-white/5">
-      <div className="max-w-7xl mx-auto px-4 mb-12 text-center">
-        <h2 className="text-3xl font-light mb-4">O que dizem nossos clientes</h2>
-        <p className="text-gray-500">Avaliações reais do Google</p>
-      </div>
-      
-      <div className="relative flex overflow-x-hidden group">
-        <div className="animate-marquee flex w-max whitespace-nowrap gap-6 px-3">
-          {displayReviews.map((review, i) => (
-            <div key={i} className="w-80 shrink-0 bg-zinc-900 border border-white/5 p-6 rounded-2xl shadow-xl whitespace-normal hover:bg-zinc-800 transition-colors">
-              <div className="flex gap-1 mb-3">
-                {[...Array(5)].map((_, j) => (
-                  <Star key={j} className={cn("w-4 h-4", j < review.rating ? "text-amber-400 fill-amber-400" : "text-gray-600")} />
-                ))}
-              </div>
-              <p className="text-sm text-gray-300 mb-4 line-clamp-4 leading-relaxed">"{review.text}"</p>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-white">
-                  {review.author_name.charAt(0)}
-                </div>
-                <p className="text-xs font-bold text-white uppercase tracking-wider">{review.author_name}</p>
-              </div>
-            </div>
-          ))}
+      <section className="py-20 bg-black border-t border-white/5">
+        <div className="max-w-7xl mx-auto px-4 text-center">
+          <h2 className="text-3xl font-light mb-4">Prova Social</h2>
+          <p className="text-gray-500 max-w-2xl mx-auto">
+            As avaliações públicas serão exibidas aqui após a configuração das integrações oficiais da operação.
+          </p>
         </div>
-      </div>
-    </section>
+      </section>
+    </div>
   );
 };
 
@@ -909,6 +857,8 @@ const BarberManager = () => {
 const InventoryManager = () => {
   const [products, setProducts] = useState<Product[]>([]);
   const [editing, setEditing] = useState<Partial<Product> | null>(null);
+  const [deleteStatus, setDeleteStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [deletingProductId, setDeletingProductId] = useState<number | null>(null);
   const fetchProducts = () => fetch('/api/products').then(res => res.json()).then(setProducts);
   useEffect(() => { fetchProducts(); }, []);
   const handleSave = async () => {
@@ -917,14 +867,44 @@ const InventoryManager = () => {
     await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
     setEditing(null); fetchProducts();
   };
-  const handleDelete = async (id: number) => { if (!confirm('Deseja realmente excluir este produto?')) return; await fetch(`/api/products/${id}`, { method: 'DELETE' }); fetchProducts(); };
+  const handleDeleteProduct = async (productId: number) => {
+    const confirmed = window.confirm('Tem certeza que deseja excluir este produto?');
+    if (!confirmed) return;
+
+    setDeletingProductId(productId);
+
+    if (!isSupabaseConfigured) {
+      setDeleteStatus({ type: 'error', message: 'Supabase não configurado para excluir produto.' });
+      setDeletingProductId(null);
+      return;
+    }
+
+    const { error } = await supabase.from('products').delete().eq('id', productId);
+    if (error) {
+      setDeleteStatus({ type: 'error', message: `Erro ao excluir produto: ${error.message}` });
+      setDeletingProductId(null);
+      return;
+    }
+
+    setProducts(prev => prev.filter(product => product.id !== productId));
+    setDeleteStatus({ type: 'success', message: 'Produto excluído com sucesso.' });
+    setDeletingProductId(null);
+  };
   return (
     <div className="space-y-8">
       <div className="flex justify-end"><button onClick={() => setEditing({ name: '', cost: 0, price: 0, stock: 0, min_stock: 5 })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Produto</button></div>
+      {deleteStatus && (
+        <div className={cn(
+          'p-4 rounded-xl border text-sm',
+          deleteStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'
+        )}>
+          {deleteStatus.message}
+        </div>
+      )}
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
           <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Produto</th><th className="px-8 py-6 font-medium">Estoque</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
-          <tbody className="divide-y divide-white/5">{products.map((product) => (<tr key={product.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white">{product.name}</td><td className="px-8 py-6">{product.stock} un.</td><td className="px-8 py-6">R$ {product.price}</td><td className="px-8 py-6"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-bold uppercase", product.stock <= product.min_stock ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500")}>{product.stock <= product.min_stock ? 'Baixo' : 'OK'}</span></td><td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(product)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(product.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td></tr>))}</tbody>
+          <tbody className="divide-y divide-white/5">{products.map((product) => (<tr key={product.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white">{product.name}</td><td className="px-8 py-6">{product.stock} un.</td><td className="px-8 py-6">R$ {product.price}</td><td className="px-8 py-6"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-bold uppercase", product.stock <= product.min_stock ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500")}>{product.stock <= product.min_stock ? 'Baixo' : 'OK'}</span></td><td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(product)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDeleteProduct(product.id)} disabled={deletingProductId === product.id} className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Excluir produto">{deletingProductId === product.id ? <div className="w-4 h-4 border-2 border-red-300 border-t-transparent rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}</button></div></td></tr>))}</tbody>
         </table>
       </div>
       {editing && (
@@ -1375,42 +1355,94 @@ const PlansManager = () => {
 const SettingsView = () => {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
-  
-  // Google Reviews State
-  const [placeId, setPlaceId] = useState(localStorage.getItem('ma_place_id') || '');
-  const [googleKey, setGoogleKey] = useState(localStorage.getItem('ma_google_key') || '');
-  const [fetchingReviews, setFetchingReviews] = useState(false);
-  const [reviewStatus, setReviewStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsStatus, setSettingsStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
+  const [integrationStatus, setIntegrationStatus] = useState<{
+    stripe: { configured: boolean };
+    google: { hasClientId: boolean; hasClientSecret: boolean; redirectUri: string; connected: boolean };
+  } | null>(null);
+  const [settings, setSettings] = useState({
+    business_name: 'MA BEARD STYLE',
+    business_phone: '',
+    business_email: '',
+    business_address: '',
+    booking_slot_minutes: '60',
+    working_hours_start: '09:00',
+    working_hours_end: '18:00',
+    timezone: 'America/Sao_Paulo',
+  });
 
-  const handleFetchReviews = async () => {
-    if (!placeId || !googleKey) {
-      setReviewStatus({ type: 'error', message: 'Preencha o Place ID e a API Key do Google.' });
-      return;
-    }
-    setFetchingReviews(true);
-    setReviewStatus({ type: 'info', message: 'Buscando avaliações no Google...' });
-    
+  const fetchSettings = async () => {
     try {
-      // Using corsproxy.io to bypass CORS in the browser for the Google Places API
-      const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=reviews&key=${googleKey}&language=pt-BR`;
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
-      
-      const res = await fetch(proxyUrl);
+      const res = await fetch('/api/settings');
       const data = await res.json();
-      
-      if (data.status === 'OK' && data.result?.reviews) {
-        localStorage.setItem('ma_reviews', JSON.stringify(data.result.reviews));
-        localStorage.setItem('ma_place_id', placeId);
-        localStorage.setItem('ma_google_key', googleKey);
-        setReviewStatus({ type: 'success', message: `${data.result.reviews.length} avaliações importadas com sucesso! Recarregue a página inicial para ver.` });
-      } else {
-        throw new Error(data.error_message || data.status || 'Nenhuma avaliação encontrada.');
+      if (res.ok) {
+        setSettings({
+          business_name: data.business_name || 'MA BEARD STYLE',
+          business_phone: data.business_phone || '',
+          business_email: data.business_email || '',
+          business_address: data.business_address || '',
+          booking_slot_minutes: data.booking_slot_minutes || '60',
+          working_hours_start: data.working_hours_start || '09:00',
+          working_hours_end: data.working_hours_end || '18:00',
+          timezone: data.timezone || 'America/Sao_Paulo',
+        });
       }
+    } catch (_e) {}
+  };
+
+  const fetchIntegrationStatus = async () => {
+    try {
+      const res = await fetch('/api/integrations/status');
+      const data = await res.json();
+      if (res.ok) setIntegrationStatus(data);
+    } catch (_e) {}
+  };
+
+  useEffect(() => {
+    fetchSettings();
+    fetchIntegrationStatus();
+  }, []);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event?.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+        setSettingsStatus({ type: 'success', message: 'Google Calendar conectada com sucesso.' });
+        fetchIntegrationStatus();
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  const connectGoogleCalendar = async () => {
+    try {
+      const res = await fetch('/api/auth/google/url');
+      const data = await res.json();
+      if (!data.url) throw new Error('Não foi possível gerar a URL de autenticação.');
+      window.open(data.url, 'google-auth', 'width=560,height=720');
+      setSettingsStatus({ type: 'info', message: 'Finalize a autenticação na janela do Google.' });
     } catch (error: any) {
-      console.error('Fetch reviews error:', error);
-      setReviewStatus({ type: 'error', message: `Erro ao buscar avaliações: ${error.message}` });
+      setSettingsStatus({ type: 'error', message: `Erro ao iniciar conexão com Google: ${error.message}` });
+    }
+  };
+
+  const saveSystemSettings = async () => {
+    setSavingSettings(true);
+    setSettingsStatus({ type: 'info', message: 'Salvando configurações...' });
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao salvar.');
+      setSettingsStatus({ type: 'success', message: 'Configurações salvas com sucesso.' });
+    } catch (error: any) {
+      setSettingsStatus({ type: 'error', message: `Falha ao salvar: ${error.message}` });
     } finally {
-      setFetchingReviews(false);
+      setSavingSettings(false);
     }
   };
 
@@ -1473,6 +1505,91 @@ const SettingsView = () => {
       <h3 className="text-xl font-medium mb-8 flex items-center gap-2"><Settings className="w-5 h-5" /> Configurações do Sistema</h3>
       
       <div className="space-y-8">
+        <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
+          <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Integrações Oficiais</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-white font-medium">Stripe</span>
+                <span className={cn("text-xs font-bold uppercase", integrationStatus?.stripe.configured ? 'text-emerald-400' : 'text-red-400')}>
+                  {integrationStatus?.stripe.configured ? 'Configurada' : 'Não Configurada'}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400">A Stripe depende da variável STRIPE_SECRET_KEY no backend.</p>
+            </div>
+
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-white font-medium">Google Calendar</span>
+                <span className={cn("text-xs font-bold uppercase", integrationStatus?.google.connected ? 'text-emerald-400' : 'text-amber-400')}>
+                  {integrationStatus?.google.connected ? 'Conectada' : 'Pendente'}
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 break-all">Redirect URI: {integrationStatus?.google.redirectUri || 'N/A'}</p>
+              <p className="text-xs text-gray-500">
+                Client ID: {integrationStatus?.google.hasClientId ? 'OK' : 'Ausente'} | Secret: {integrationStatus?.google.hasClientSecret ? 'OK' : 'Ausente'}
+              </p>
+              <button onClick={connectGoogleCalendar} className="px-4 py-2 rounded-lg bg-white text-black text-xs font-bold hover:bg-gray-200 transition-colors">
+                Conectar Google Calendar
+              </button>
+            </div>
+          </div>
+          <div className="mt-4">
+            <button onClick={fetchIntegrationStatus} className="px-4 py-2 rounded-lg bg-white/10 text-white text-xs font-bold hover:bg-white/20 transition-colors">
+              Atualizar Status
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
+          <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Parâmetros Editáveis do Sistema</h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">Nome do Negócio</label>
+              <input value={settings.business_name} onChange={(e) => setSettings({ ...settings, business_name: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">Telefone</label>
+              <input value={settings.business_phone} onChange={(e) => setSettings({ ...settings, business_phone: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">E-mail</label>
+              <input value={settings.business_email} onChange={(e) => setSettings({ ...settings, business_email: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">Fuso Horário</label>
+              <input value={settings.timezone} onChange={(e) => setSettings({ ...settings, timezone: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">Endereço</label>
+              <input value={settings.business_address} onChange={(e) => setSettings({ ...settings, business_address: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div>
+              <label className="text-[10px] uppercase text-gray-500 block mb-1">Duração de Slot (min)</label>
+              <input type="number" min={15} step={5} value={settings.booking_slot_minutes} onChange={(e) => setSettings({ ...settings, booking_slot_minutes: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] uppercase text-gray-500 block mb-1">Abertura</label>
+                <input type="time" value={settings.working_hours_start} onChange={(e) => setSettings({ ...settings, working_hours_start: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+              </div>
+              <div>
+                <label className="text-[10px] uppercase text-gray-500 block mb-1">Fechamento</label>
+                <input type="time" value={settings.working_hours_end} onChange={(e) => setSettings({ ...settings, working_hours_end: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm" />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 flex items-center gap-3">
+            <button onClick={saveSystemSettings} disabled={savingSettings} className="px-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors disabled:opacity-60">
+              {savingSettings ? 'Salvando...' : 'Salvar Configurações'}
+            </button>
+            <button onClick={fetchSettings} className="px-4 py-3 rounded-xl bg-white/10 text-white font-bold hover:bg-white/20 transition-colors text-sm">
+              Recarregar
+            </button>
+          </div>
+        </div>
+
         <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
           <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Vídeo de Fundo (Landing Page)</h4>
           <p className="text-xs text-gray-400 mb-6">
@@ -1547,75 +1664,6 @@ const SettingsView = () => {
         </div>
 
         <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
-          <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Integração com Google Avaliações</h4>
-          <p className="text-xs text-gray-400 mb-6">
-            Busque avaliações reais do seu negócio no Google Meu Negócio para exibir na página inicial.
-            Você precisará de uma API Key do Google Cloud e do Place ID da sua barbearia.
-          </p>
-
-          <div className="space-y-4 max-w-xl">
-            <div>
-              <label className="text-[10px] uppercase text-gray-500 block mb-1">Google Places API Key</label>
-              <input 
-                type="text" 
-                value={googleKey}
-                onChange={(e) => setGoogleKey(e.target.value)}
-                placeholder="AIzaSy..."
-                className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm focus:outline-none focus:border-white transition-colors"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] uppercase text-gray-500 block mb-1">Google Place ID</label>
-              <input 
-                type="text" 
-                value={placeId}
-                onChange={(e) => setPlaceId(e.target.value)}
-                placeholder="ChIJ..."
-                className="w-full bg-black border border-white/10 rounded-xl p-3 text-sm focus:outline-none focus:border-white transition-colors"
-              />
-              <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noreferrer" className="text-[10px] text-blue-400 hover:underline mt-1 inline-block">
-                Como encontrar meu Place ID?
-              </a>
-            </div>
-
-            <button 
-              onClick={handleFetchReviews}
-              disabled={fetchingReviews}
-              className={cn(
-                "px-6 py-3 rounded-xl font-bold transition-all flex items-center gap-2",
-                fetchingReviews 
-                  ? "bg-gray-800 text-gray-500 cursor-not-allowed" 
-                  : "bg-white text-black hover:bg-gray-200"
-              )}
-            >
-              {fetchingReviews ? <div className="w-4 h-4 border-2 border-gray-500 border-t-transparent rounded-full animate-spin" /> : <Star className="w-4 h-4" />}
-              {fetchingReviews ? 'Buscando...' : 'Buscar Avaliações'}
-            </button>
-
-            <AnimatePresence>
-              {reviewStatus && (
-                <motion.div 
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className={cn(
-                    "p-4 rounded-xl text-sm border flex items-start gap-3",
-                    reviewStatus.type === 'success' && "bg-emerald-500/10 border-emerald-500/20 text-emerald-400",
-                    reviewStatus.type === 'error' && "bg-red-500/10 border-red-500/20 text-red-400",
-                    reviewStatus.type === 'info' && "bg-blue-500/10 border-blue-500/20 text-blue-400"
-                  )}
-                >
-                  {reviewStatus.type === 'success' && <Check className="w-5 h-5 shrink-0" />}
-                  {reviewStatus.type === 'error' && <AlertTriangle className="w-5 h-5 shrink-0" />}
-                  {reviewStatus.type === 'info' && <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />}
-                  <p>{reviewStatus.message}</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
-
-        <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
           <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Informações do Supabase</h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -1644,6 +1692,27 @@ const SettingsView = () => {
             </div>
           )}
         </div>
+
+        <AnimatePresence>
+          {settingsStatus && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className={cn(
+                'p-4 rounded-xl text-sm border flex items-start gap-3',
+                settingsStatus.type === 'success' && 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400',
+                settingsStatus.type === 'error' && 'bg-red-500/10 border-red-500/20 text-red-400',
+                settingsStatus.type === 'info' && 'bg-blue-500/10 border-blue-500/20 text-blue-400'
+              )}
+            >
+              {settingsStatus.type === 'success' && <Check className="w-5 h-5 shrink-0" />}
+              {settingsStatus.type === 'error' && <AlertTriangle className="w-5 h-5 shrink-0" />}
+              {settingsStatus.type === 'info' && <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />}
+              <p>{settingsStatus.message}</p>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

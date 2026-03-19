@@ -7,14 +7,16 @@ import { google } from "googleapis";
 
 dotenv.config();
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_mock", {
-  apiVersion: "2025-01-27.acacia" as any,
-});
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+const stripe = stripeSecretKey
+  ? new Stripe(stripeSecretKey, {
+      apiVersion: "2025-01-27.acacia" as any,
+    })
+  : null;
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  console.warn("AVISO: STRIPE_SECRET_KEY não encontrada nos segredos. O checkout usará o modo de simulação (mock).");
+if (!stripe) {
+  console.warn("AVISO: STRIPE_SECRET_KEY não encontrada. Checkout Stripe desabilitado até configurar a chave.");
 } else {
-  // Test Stripe connection
   stripe.balance.retrieve()
     .then(() => console.log("Stripe conectada e validada com sucesso."))
     .catch((err) => console.error("ERRO: STRIPE_SECRET_KEY parece inválida ou expirada:", err.message));
@@ -34,6 +36,30 @@ const getGoogleRedirectUri = () => {
 const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const SYSTEM_SETTING_KEYS = [
+  "business_name",
+  "business_phone",
+  "business_email",
+  "business_address",
+  "booking_slot_minutes",
+  "working_hours_start",
+  "working_hours_end",
+  "timezone",
+] as const;
+
+type SystemSettingsPayload = Record<(typeof SYSTEM_SETTING_KEYS)[number], string>;
+
+const DEFAULT_SYSTEM_SETTINGS: SystemSettingsPayload = {
+  business_name: "MA BEARD STYLE",
+  business_phone: "",
+  business_email: "",
+  business_address: "",
+  booking_slot_minutes: "60",
+  working_hours_start: "09:00",
+  working_hours_end: "18:00",
+  timezone: "America/Sao_Paulo",
+};
 
 async function startServer() {
   const app = express();
@@ -56,8 +82,7 @@ async function startServer() {
             benefits: typeof p.benefits === 'string' ? JSON.parse(p.benefits) : p.benefits 
           };
 
-          // Se o plano tem produto mas não tem preço, tenta buscar na Stripe
-          if (plan.stripe_product_id && !plan.stripe_price_id && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('mock')) {
+          if (stripe && plan.stripe_product_id && !plan.stripe_price_id) {
             try {
               const prices = await stripe.prices.list({
                 product: plan.stripe_product_id,
@@ -75,36 +100,11 @@ async function startServer() {
         }));
         return res.json(plansWithPrices);
       }
+      return res.json([]);
     } catch (e) {
-      console.error("Erro ao buscar planos do Supabase, usando fallback");
+      console.error("Erro ao buscar planos do Supabase:", e);
+      return res.status(500).json({ error: "Erro ao buscar planos" });
     }
-
-    // Fallback plans
-    const fallbackPlans = [
-      { id: 'basic', name: 'Plano Cabelo', price: 89, description: 'Praticidade e economia para o dia a dia.', benefits: ['2 cortes por mês', '5% desconto em produtos'], stripe_product_id: 'prod_U5ChGCW1JPH81t', stripe_price_id: '' },
-      { id: 'premium', name: 'Plano Barba', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', benefits: ['4 barbas por mês', 'Prioridade no agendamento', '10% desconto em produtos'], stripe_product_id: 'prod_U5Cjd5DEqm78PC', stripe_price_id: '' },
-      { id: 'vip', name: 'Plano Cabelo e Barba', price: 199, description: 'Experiência completa e ilimitada.', benefits: ['Corte ilimitado (1 por semana)', 'Barba ilimitada (1 por semana)', 'Atendimento prioritário', '15% desconto em produtos', 'Brinde mensal'], stripe_product_id: 'prod_U5Cky2xiJ6Fkb9', stripe_price_id: '' }
-    ];
-
-    const fallbackWithPrices = await Promise.all(fallbackPlans.map(async (plan) => {
-      if (plan.stripe_product_id && !plan.stripe_price_id && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('mock')) {
-        try {
-          const prices = await stripe.prices.list({
-            product: plan.stripe_product_id,
-            active: true,
-            limit: 1
-          });
-          if (prices.data.length > 0) {
-            plan.stripe_price_id = prices.data[0].id;
-          }
-        } catch (e) {
-          console.error(`Erro ao buscar preço fallback para produto ${plan.stripe_product_id}:`, e);
-        }
-      }
-      return plan;
-    }));
-
-    res.json(fallbackWithPrices);
   });
 
   app.put("/api/plans/:id", async (req, res) => {
@@ -115,7 +115,6 @@ async function startServer() {
     const benefitsArray = Array.isArray(benefits) ? benefits : [];
     
     try {
-      // Use upsert to handle cases where the plan might not exist in the DB yet (e.g. editing a fallback)
       const { data, error } = await supabase
         .from('plans')
         .upsert({ 
@@ -156,6 +155,71 @@ async function startServer() {
     
     if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
+  });
+
+  app.get("/api/settings", async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('config')
+        .select('key, value')
+        .in('key', [...SYSTEM_SETTING_KEYS]);
+
+      if (error) throw error;
+
+      const settings = { ...DEFAULT_SYSTEM_SETTINGS };
+      for (const row of data || []) {
+        if (SYSTEM_SETTING_KEYS.includes(row.key as any)) {
+          settings[row.key as keyof SystemSettingsPayload] = row.value || "";
+        }
+      }
+
+      res.json(settings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/settings", async (req, res) => {
+    try {
+      const payload = req.body || {};
+      const updates = SYSTEM_SETTING_KEYS.map((key) => ({
+        key,
+        value: String(payload[key] ?? DEFAULT_SYSTEM_SETTINGS[key]).trim(),
+      }));
+
+      const { error } = await supabase.from('config').upsert(updates, { onConflict: 'key' });
+      if (error) throw error;
+
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/integrations/status", async (req, res) => {
+    let googleConnected = false;
+    try {
+      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+      if (config?.value) {
+        const tokens = JSON.parse(config.value);
+        oauth2Client.setCredentials(tokens);
+        const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+        await calendar.calendarList.list({ maxResults: 1 });
+        googleConnected = true;
+      }
+    } catch (_e) {}
+
+    res.json({
+      stripe: {
+        configured: Boolean(stripe),
+      },
+      google: {
+        hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
+        hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+        redirectUri: getGoogleRedirectUri(),
+        connected: googleConnected,
+      },
+    });
   });
 
   // Dashboard Stats
@@ -201,7 +265,6 @@ async function startServer() {
         .from('products')
         .select('*', { count: 'exact', head: true });
       // Note: Supabase doesn't easily support column-to-column comparison in basic select count
-      // We'll just fetch products and filter for simplicity in this demo, or use a better query
       const { data: products } = await supabase.from('products').select('stock, min_stock');
       const lowStockAlerts = products?.filter(p => p.stock <= p.min_stock).length || 0;
 
@@ -688,6 +751,10 @@ async function startServer() {
   app.post("/api/create-checkout-session", async (req, res) => {
     const { planId, email } = req.body;
     console.log(`Iniciando checkout para plano: ${planId}, email: ${email}`);
+
+    if (!stripe) {
+      return res.status(503).json({ error: "Stripe não configurada no servidor" });
+    }
     
     let plan: any;
     
@@ -699,14 +766,6 @@ async function startServer() {
           ...dbPlan,
           benefits: typeof dbPlan.benefits === 'string' ? JSON.parse(dbPlan.benefits) : dbPlan.benefits
         };
-      } else {
-        // Fallback mapping if not in DB
-        const fallbackPlans = [
-          { id: 'basic', name: 'Plano Cabelo', price: 89, description: 'Praticidade e economia para o dia a dia.', stripe_product_id: 'prod_U5ChGCW1JPH81t', stripe_price_id: '' },
-          { id: 'premium', name: 'Plano Barba', price: 149, description: 'O mais escolhido para quem quer estar sempre impecável.', stripe_product_id: 'prod_U5Cjd5DEqm78PC', stripe_price_id: '' },
-          { id: 'vip', name: 'Plano Cabelo e Barba', price: 199, description: 'Experiência completa e ilimitada.', stripe_product_id: 'prod_U5Cky2xiJ6Fkb9', stripe_price_id: '' }
-        ];
-        plan = fallbackPlans.find(p => p.id === planId);
       }
 
       if (!plan) {
@@ -752,6 +811,9 @@ async function startServer() {
         success_url: `${appUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${appUrl}/`,
         customer_email: email,
+        metadata: {
+          plan_id: planId,
+        },
       });
 
       const timeoutPromise = new Promise((_, reject) => 
@@ -771,16 +833,14 @@ async function startServer() {
     }
   });
 
-  // Webhook (Simplified for demo)
   app.post("/api/webhook", async (req, res) => {
     const event = req.body;
-    // In a real app, verify Stripe signature
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       await supabase.from('subscriptions').insert([{
         id: session.id,
         customer_email: session.customer_email,
-        plan_id: "premium", // Simplified
+        plan_id: session.metadata?.plan_id || "",
         status: "active",
         stripe_subscription_id: session.subscription
       }]);
@@ -886,11 +946,7 @@ async function startServer() {
     const { code } = req.query;
     try {
       const { tokens } = await oauth2Client.getToken(code as string);
-      // In a real app, store these tokens in Supabase (e.g., in a 'settings' or 'barbers' table)
-      // For this demo, we'll just log them and send a success message
-      console.log("Google Tokens received:", tokens);
-      
-      // Store in Supabase (simplified: using a 'config' table or similar)
+
       await supabase.from('config').upsert({ 
         key: 'google_calendar_tokens', 
         value: JSON.stringify(tokens) 
