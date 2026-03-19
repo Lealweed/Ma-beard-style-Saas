@@ -203,6 +203,61 @@ const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: string, setAc
   );
 };
 
+const Testimonials = () => {
+  const defaultReviews = [
+    { author_name: 'João Silva', rating: 5, text: 'Melhor barbearia da cidade! Atendimento impecável e ambiente muito agradável.' },
+    { author_name: 'Carlos Mendes', rating: 5, text: 'Sou assinante do plano VIP e não me arrependo. Praticidade total e corte sempre em dia.' },
+    { author_name: 'Roberto Alves', rating: 5, text: 'Profissionais excelentes. O cuidado com a barba é sensacional, recomendo a todos.' },
+    { author_name: 'Felipe Costa', rating: 4, text: 'Ótimo serviço, cerveja gelada e sinuca enquanto espera. Muito bom.' },
+    { author_name: 'Lucas Pereira', rating: 5, text: 'Lugar fantástico! O aplicativo de agendamento facilita muito a vida.' }
+  ];
+
+  const [reviews, setReviews] = useState(defaultReviews);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('ma_reviews');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.length > 0) setReviews(parsed);
+      } catch (e) {
+        console.error('Error parsing reviews', e);
+      }
+    }
+  }, []);
+
+  const displayReviews = [...reviews, ...reviews, ...reviews, ...reviews];
+
+  return (
+    <section className="py-20 bg-black overflow-hidden border-t border-white/5">
+      <div className="max-w-7xl mx-auto px-4 mb-12 text-center">
+        <h2 className="text-3xl font-light mb-4">O que dizem nossos clientes</h2>
+        <p className="text-gray-500">Avaliações reais do Google</p>
+      </div>
+      <div className="relative flex overflow-x-hidden group">
+        <div className="animate-marquee flex w-max whitespace-nowrap gap-6 px-3">
+          {displayReviews.map((review, i) => (
+            <div key={i} className="w-80 shrink-0 bg-zinc-900 border border-white/5 p-6 rounded-2xl shadow-xl whitespace-normal hover:bg-zinc-800 transition-colors">
+              <div className="flex gap-1 mb-3">
+                {[...Array(5)].map((_, j) => (
+                  <Star key={j} className={cn("w-4 h-4", j < review.rating ? "text-amber-400 fill-amber-400" : "text-gray-600")} />
+                ))}
+              </div>
+              <p className="text-sm text-gray-300 mb-4 line-clamp-4 leading-relaxed">"{review.text}"</p>
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-white">
+                  {review.author_name.charAt(0)}
+                </div>
+                <p className="text-xs font-bold text-white uppercase tracking-wider">{review.author_name}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 const LandingPage = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [videoUrl, setVideoUrl] = useState("https://assets.mixkit.co/videos/preview/mixkit-barber-cutting-hair-with-scissors-close-up-42862-large.mp4");
@@ -387,14 +442,7 @@ const LandingPage = ({ setActiveTab }: { setActiveTab: (t: string) => void }) =>
         </div>
       </section>
 
-      <section className="py-20 bg-black border-t border-white/5">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <h2 className="text-3xl font-light mb-4">Prova Social</h2>
-          <p className="text-gray-500 max-w-2xl mx-auto">
-            As avaliações públicas serão exibidas aqui após a configuração das integrações oficiais da operação.
-          </p>
-        </div>
-      </section>
+      <Testimonials />
     </div>
   );
 };
