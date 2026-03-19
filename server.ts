@@ -960,7 +960,7 @@ async function startServer() {
         if (!error) synced.push({ ...planData, dbId: data?.[0]?.id });
       }
 
-      res.json({ success: true, count: synced.length, plans: synced });
+      res.json({ success: true, synced: synced.length, plans: synced });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

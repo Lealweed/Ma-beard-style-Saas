@@ -432,7 +432,7 @@ const AdminDashboard = () => {
     <div className="flex min-h-screen bg-[#050505] text-white pt-16">
       <aside className={cn("fixed left-0 top-16 bottom-0 z-40 bg-black border-r border-white/5 transition-all duration-300", sidebarOpen ? "w-64" : "w-20")}>
         <div className="flex flex-col h-full p-4">
-          <div className="space-y-2 flex-1">
+          <div className="space-y-2 flex-1 overflow-y-auto min-h-0 pr-1">
             {menuItems.map((item) => (
               <button key={item.id} onClick={() => setActiveView(item.id as any)} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", activeView === item.id ? "bg-white text-black shadow-[0_10px_20px_rgba(255,255,255,0.1)]" : "text-gray-500 hover:text-white hover:bg-white/5")}>
                 <item.icon className={cn("w-5 h-5 shrink-0", activeView === item.id ? "text-black" : "group-hover:scale-110 transition-transform")} />
