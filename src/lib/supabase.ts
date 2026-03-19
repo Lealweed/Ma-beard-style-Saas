@@ -1,13 +1,24 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+declare global {
+  interface Window {
+    __APP_CONFIG__?: {
+      supabaseUrl?: string;
+      supabaseAnonKey?: string;
+    };
+  }
+}
+
+const runtimeConfig = typeof window !== 'undefined' ? window.__APP_CONFIG__ : undefined;
+
+const supabaseUrl = runtimeConfig?.supabaseUrl || import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = runtimeConfig?.supabaseAnonKey || import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 // Diagnostic logging (visible in browser console)
 if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('⚠️ Supabase: Chaves de configuração não encontradas no ambiente (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).');
+  console.warn('Supabase: chaves de configuração não encontradas no runtime nem no build (SUPABASE_URL/VITE_SUPABASE_URL e SUPABASE_ANON_KEY/VITE_SUPABASE_ANON_KEY).');
 } else {
-  console.log('✅ Supabase: Chaves detectadas. Tentando inicializar cliente...');
+  console.log('Supabase: chaves detectadas. Inicializando cliente.');
 }
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseUrl.startsWith('http') && supabaseAnonKey);

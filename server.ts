@@ -7,6 +7,14 @@ import { google } from "googleapis";
 
 dotenv.config();
 
+const getEnvValue = (...keys: string[]) => {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value) return value;
+  }
+  return "";
+};
+
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, {
@@ -33,9 +41,14 @@ const getGoogleRedirectUri = () => {
   return process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "URL não configurada (defina APP_URL)");
 };
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL || "";
-const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || "";
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabaseUrl = getEnvValue("SUPABASE_URL", "VITE_SUPABASE_URL");
+const supabaseKey = getEnvValue("SUPABASE_ANON_KEY", "VITE_SUPABASE_ANON_KEY");
+const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
+const supabase = isSupabaseConfigured ? createClient(supabaseUrl, supabaseKey) : null;
+
+if (!isSupabaseConfigured) {
+  console.warn("AVISO: SUPABASE_URL/SUPABASE_ANON_KEY não encontrados. APIs que dependem do Supabase falharão até configurar os secrets.");
+}
 
 const SYSTEM_SETTING_KEYS = [
   "business_name",
@@ -66,6 +79,17 @@ async function startServer() {
   const PORT = 3000; // Forçamos a porta 3000 para coincidir com o fly.toml
 
   app.use(express.json());
+
+  app.get("/app-config.js", (_req, res) => {
+    res.type("application/javascript");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(
+      `window.__APP_CONFIG__ = ${JSON.stringify({
+        supabaseUrl,
+        supabaseAnonKey: supabaseKey,
+      })};`
+    );
+  });
 
   // API Routes
   
