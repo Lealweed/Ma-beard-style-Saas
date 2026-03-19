@@ -1028,6 +1028,79 @@ async function startServer() {
     res.json(data || []);
   });
 
+  app.post("/api/public/check-subscription", async (req, res) => {
+    const rawIdentifier = String(req.body?.identifier || '').trim();
+
+    if (!rawIdentifier) {
+      return res.status(400).json({ error: 'Informe um e-mail ou CPF.' });
+    }
+
+    const normalizedEmail = rawIdentifier.toLowerCase();
+    const cpfDigits = rawIdentifier.replace(/\D/g, '');
+    const looksLikeEmail = rawIdentifier.includes('@');
+
+    let candidateEmails: string[] = [];
+
+    try {
+      if (looksLikeEmail) {
+        candidateEmails = [normalizedEmail];
+      } else {
+        const cpfVariants = Array.from(new Set([
+          rawIdentifier,
+          cpfDigits,
+          cpfDigits.length === 11
+            ? `${cpfDigits.slice(0, 3)}.${cpfDigits.slice(3, 6)}.${cpfDigits.slice(6, 9)}-${cpfDigits.slice(9)}`
+            : ''
+        ].filter(Boolean)));
+
+        if (cpfVariants.length === 0) {
+          return res.status(400).json({ error: 'CPF inválido.' });
+        }
+
+        const { data: customers, error: customerError } = await supabase
+          .from('customers')
+          .select('email')
+          .in('cpf', cpfVariants);
+
+        if (customerError) {
+          return res.status(500).json({ error: customerError.message });
+        }
+
+        candidateEmails = (customers || [])
+          .map((c: any) => String(c.email || '').trim().toLowerCase())
+          .filter(Boolean);
+      }
+
+      if (candidateEmails.length === 0) {
+        return res.json({ active: false });
+      }
+
+      for (const email of candidateEmails) {
+        const { data: subscriptions, error: subError } = await supabase
+          .from('subscriptions')
+          .select('customer_email, status')
+          .eq('status', 'active')
+          .ilike('customer_email', email)
+          .limit(1);
+
+        if (subError) {
+          return res.status(500).json({ error: subError.message });
+        }
+
+        if (subscriptions && subscriptions.length > 0) {
+          return res.json({
+            active: true,
+            email: subscriptions[0].customer_email
+          });
+        }
+      }
+
+      return res.json({ active: false });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Erro ao validar assinatura.' });
+    }
+  });
+
   app.get("/api/public/available-slots", async (req, res) => {
     const { barberId, date } = req.query;
 

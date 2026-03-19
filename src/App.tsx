@@ -1905,6 +1905,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
   const [clientData, setClientData] = useState({ name: '', phone: '', email: '' });
+  const [identifier, setIdentifier] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
@@ -1922,7 +1923,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
   }, [selectedBarber, selectedDate]);
 
   const handleConfirm = async () => {
-    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone) return;
+    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone || !clientData.email) return;
     setLoading(true);
     try {
       const custRes = await fetch('/api/customers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clientData) });
@@ -1944,7 +1945,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
   };
 
   const todayDate = new Date();
-  const stepLabels = ['Serviço', 'Barbeiro', 'Data', 'Horário', 'Seus Dados', 'Confirmar'];
+  const stepLabels = ['Identificação', 'Serviço', 'Barbeiro', 'Data', 'Horário', 'Seus Dados', 'Confirmar'];
   const bookingDays = Array.from({ length: 21 }, (_, idx) => {
     const date = new Date(todayDate);
     date.setDate(todayDate.getDate() + idx);
@@ -1976,7 +1977,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
     <div className="pt-24 pb-20 px-4 max-w-3xl mx-auto">
       <div className="text-center mb-10">
         <h2 className="text-3xl md:text-4xl font-light mb-2">Agende seu Horário</h2>
-        <p className="text-gray-500">Escolha o serviço, barbeiro e horário ideal para você.</p>
+        <p className="text-gray-500">Valide sua assinatura e escolha o serviço, barbeiro e horário ideal para você.</p>
       </div>
 
       <div className="flex justify-center gap-2 mb-10">
@@ -1992,9 +1993,76 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
         <motion.div key={step} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
 
           {step === 1 && (
+            <div className="max-w-md mx-auto space-y-4">
+              <label className="text-xs font-bold uppercase tracking-widest text-gray-500 block">Identificação Obrigatória</label>
+              <input
+                placeholder="Digite seu e-mail ou CPF"
+                value={identifier}
+                onChange={(e) => {
+                  setIdentifier(e.target.value);
+                  setSubscriptionBlocked(false);
+                }}
+                className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm"
+              />
+
+              {subscriptionBlocked && (
+                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-center space-y-3">
+                  <Crown className="w-8 h-8 text-amber-400 mx-auto" />
+                  <p className="text-amber-300 font-medium text-sm">Você precisa de um plano ativo para agendar.</p>
+                  <button onClick={() => setActiveTab('landing')} className="w-full py-4 rounded-xl bg-amber-500 text-black font-bold text-base hover:bg-amber-400 transition-colors">Ver Planos</button>
+                </motion.div>
+              )}
+
+              <button
+                onClick={async () => {
+                  const value = identifier.trim();
+                  if (!value) {
+                    alert('Informe seu e-mail ou CPF para continuar.');
+                    return;
+                  }
+
+                  setCheckingSubscription(true);
+                  setSubscriptionBlocked(false);
+
+                  try {
+                    const res = await fetch('/api/public/check-subscription', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ identifier: value })
+                    });
+                    const data = await res.json();
+
+                    if (!res.ok) {
+                      alert(data?.error || 'Nao foi possivel validar sua assinatura.');
+                      return;
+                    }
+
+                    if (data?.active) {
+                      const lockedEmail = String(data.email || value).trim();
+                      setClientData((prev) => ({ ...prev, email: lockedEmail }));
+                      setStep(2);
+                    } else {
+                      setSubscriptionBlocked(true);
+                      alert('Você precisa de um plano ativo para agendar.');
+                    }
+                  } catch {
+                    alert('Erro de conexao ao validar assinatura. Tente novamente.');
+                  } finally {
+                    setCheckingSubscription(false);
+                  }
+                }}
+                disabled={checkingSubscription}
+                className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50"
+              >
+                {checkingSubscription ? 'Verificando assinatura...' : 'Continuar'}
+              </button>
+            </div>
+          )}
+
+          {step === 2 && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {services.map(s => (
-                <button key={s.id} onClick={() => { setSelectedService(s); setStep(2); }} className={cn("p-6 rounded-2xl border text-left transition-all hover:border-white/30", selectedService?.id === s.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
+                <button key={s.id} onClick={() => { setSelectedService(s); setStep(3); }} className={cn("p-6 rounded-2xl border text-left transition-all hover:border-white/30", selectedService?.id === s.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
                   <h4 className="text-lg font-medium text-white mb-1">{s.name}</h4>
                   {s.description && <p className="text-xs text-gray-500 mb-3">{s.description}</p>}
                   <div className="flex items-center gap-4 text-sm"><span className="text-emerald-400 font-bold">R$ {Number(s.price).toFixed(2)}</span><span className="text-gray-500">{s.duration_minutes} min</span></div>
@@ -2004,10 +2072,10 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
             </div>
           )}
 
-          {step === 2 && (
+          {step === 3 && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {barbers.map(b => (
-                <button key={b.id} onClick={() => { setSelectedBarber(b); setStep(3); }} className={cn("p-6 rounded-2xl border text-center transition-all hover:border-white/30", selectedBarber?.id === b.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
+                <button key={b.id} onClick={() => { setSelectedBarber(b); setStep(4); }} className={cn("p-6 rounded-2xl border text-center transition-all hover:border-white/30", selectedBarber?.id === b.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
                   <div className="w-20 h-20 rounded-full overflow-hidden bg-white/10 border border-white/10 mx-auto mb-4">{b.photo_url ? <img src={b.photo_url} alt={b.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-gray-400">{b.name?.charAt(0)}</div>}</div>
                   <h4 className="text-lg font-medium text-white">{b.name}</h4>
                   <p className="text-xs text-gray-500 mt-1">{b.specialty}</p>
@@ -2017,7 +2085,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
             </div>
           )}
 
-          {step === 3 && (
+          {step === 4 && (
             <div className="space-y-6">
               <div>
                 <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 block">Selecione uma Data</label>
@@ -2029,7 +2097,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
                     return (
                       <button
                         key={key}
-                        onClick={() => { setSelectedDate(key); setSelectedTime(''); setStep(4); }}
+                        onClick={() => { setSelectedDate(key); setSelectedTime(''); setStep(5); }}
                         className={cn(
                           'p-4 rounded-xl border text-left transition-all',
                           selected ? 'border-white bg-white text-black' : 'border-white/10 bg-zinc-900/40 hover:border-white/30',
@@ -2051,7 +2119,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
             </div>
           )}
 
-          {step === 4 && (
+          {step === 5 && (
             <div className="space-y-6">
               <div className="p-4 rounded-xl border border-white/10 bg-zinc-900/30">
                 <p className="text-xs text-gray-400">Data selecionada</p>
@@ -2066,7 +2134,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
                   {slots.map(slot => (
                     <button
                       key={slot}
-                      onClick={() => { setSelectedTime(slot); setStep(5); }}
+                      onClick={() => { setSelectedTime(slot); setStep(6); }}
                       className={cn('py-3 px-4 rounded-xl border text-sm font-medium transition-all', selectedTime === slot ? 'border-white bg-white text-black' : 'border-white/10 hover:border-white/30 text-white')}
                     >
                       {slot}
@@ -2078,47 +2146,28 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
             </div>
           )}
 
-          {step === 5 && (
+          {step === 6 && (
             <div className="max-w-md mx-auto space-y-4">
-              <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => { setClientData({...clientData, name: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => { setClientData({...clientData, phone: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <input type="email" placeholder="E-mail (obrigatório para verificar assinatura)" value={clientData.email} onChange={e => { setClientData({...clientData, email: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-
-              {subscriptionBlocked && (
-                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-center space-y-3">
-                  <Crown className="w-8 h-8 text-amber-400 mx-auto" />
-                  <p className="text-amber-300 font-medium text-sm">Assinatura não encontrada</p>
-                  <p className="text-amber-200/70 text-xs leading-relaxed">O agendamento online é exclusivo para assinantes. Escolha um plano para liberar este benefício.</p>
-                  <button onClick={() => setActiveTab('landing')} className="w-full py-3 rounded-xl bg-amber-500 text-black font-bold text-sm hover:bg-amber-400 transition-colors">Ver Planos de Assinatura</button>
-                </motion.div>
-              )}
+              <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => setClientData({...clientData, name: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => setClientData({...clientData, phone: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="email" placeholder="E-mail da assinatura" value={clientData.email} disabled className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm text-gray-400 cursor-not-allowed" />
 
               <button
-                onClick={async () => {
-                  if (!clientData.name || !clientData.phone) { alert('Preencha nome e WhatsApp.'); return; }
-                  if (!clientData.email) { setSubscriptionBlocked(true); return; }
-                  setCheckingSubscription(true);
-                  setSubscriptionBlocked(false);
-                  try {
-                    const res = await fetch('/api/subscriptions');
-                    const subs = await res.json();
-                    const hasActive = Array.isArray(subs) && subs.some(
-                      (s: any) => s.customer_email?.toLowerCase() === clientData.email.toLowerCase() && s.status === 'active'
-                    );
-                    if (hasActive) { setStep(6); }
-                    else { setSubscriptionBlocked(true); }
-                  } catch { setStep(6); } // se API falhar, permite continuar
-                  finally { setCheckingSubscription(false); }
+                onClick={() => {
+                  if (!clientData.name || !clientData.phone) {
+                    alert('Preencha nome e WhatsApp.');
+                    return;
+                  }
+                  setStep(7);
                 }}
-                disabled={checkingSubscription}
                 className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50"
               >
-                {checkingSubscription ? 'Verificando assinatura...' : 'Continuar'}
+                Continuar
               </button>
             </div>
           )}
 
-          {step === 6 && (
+          {step === 7 && (
             <div className="max-w-md mx-auto bg-zinc-900/40 border border-white/10 rounded-[2.5rem] p-8">
               <h3 className="text-xl font-medium mb-6 text-center">Confirme seu Agendamento</h3>
               <div className="space-y-4 mb-8">
@@ -2129,6 +2178,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
                 <div className="h-px bg-white/10" />
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Nome</span><span className="text-white">{clientData.name}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-gray-400">WhatsApp</span><span className="text-white">{clientData.phone}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">E-mail</span><span className="text-white">{clientData.email}</span></div>
               </div>
               <button onClick={handleConfirm} disabled={loading} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50">{loading ? 'Confirmando...' : 'Confirmar Agendamento'}</button>
             </div>
