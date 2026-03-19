@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS plans (
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Adiciona colunas Stripe caso a tabela já existisse sem elas
+DO $$ BEGIN ALTER TABLE plans ADD COLUMN stripe_product_id TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE plans ADD COLUMN stripe_price_id   TEXT; EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+DO $$ BEGIN ALTER TABLE plans ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(); EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+
 -- Índice único para upsert via stripe_product_id
 CREATE UNIQUE INDEX IF NOT EXISTS plans_stripe_product_id_uidx
   ON plans (stripe_product_id)
