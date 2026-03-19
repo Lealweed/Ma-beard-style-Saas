@@ -89,6 +89,23 @@ interface Appointment {
   barber_name?: string;
 }
 
+interface ServiceCatalogItem {
+  id: number;
+  name: string;
+  price: number;
+  duration_minutes: number;
+  description?: string;
+  active?: boolean;
+}
+
+interface Expense {
+  id: number;
+  description: string;
+  amount: number;
+  category: string;
+  date: string;
+}
+
 // --- Components ---
 
 const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: string, setActiveTab: (t: string) => void, session: Session | null }) => {
@@ -96,6 +113,7 @@ const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: string, setAc
 
   const navItems = [
     { id: 'landing', label: 'Início', icon: Scissors },
+    { id: 'booking', label: 'Agendar', icon: Calendar },
     { id: 'admin', label: 'Dashboard', icon: LayoutDashboard },
   ];
 
@@ -182,7 +200,7 @@ const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: string, setAc
   );
 };
 
-const LandingPage = () => {
+const LandingPage = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [videoUrl, setVideoUrl] = useState("https://assets.mixkit.co/videos/preview/mixkit-barber-cutting-hair-with-scissors-close-up-42862-large.mp4");
 
@@ -250,8 +268,8 @@ const LandingPage = () => {
               <button onClick={() => document.getElementById('plans')?.scrollIntoView({ behavior: 'smooth' })} className="px-10 py-5 bg-white text-black rounded-full font-bold hover:bg-gray-200 transition-all active:scale-95 shadow-[0_20px_50px_rgba(255,255,255,0.15)]">
                 Ver Planos de Assinatura
               </button>
-              <button className="px-10 py-5 bg-white/10 text-white border border-white/20 backdrop-blur-md rounded-full font-bold hover:bg-white/20 transition-all">
-                Conhecer a Unidade
+              <button onClick={() => setActiveTab('booking')} className="px-10 py-5 bg-white/10 text-white border border-white/20 backdrop-blur-md rounded-full font-bold hover:bg-white/20 transition-all">
+                Agendar Online
               </button>
             </div>
           </motion.div>
@@ -381,7 +399,7 @@ const LandingPage = () => {
 const AdminDashboard = () => {
   const [stats, setStats] = useState<Stats | null>(null);
   const [revenueData, setRevenueData] = useState<any[]>([]);
-  const [activeView, setActiveView] = useState<'overview' | 'pos' | 'appointments' | 'barbers' | 'inventory' | 'customers' | 'reports' | 'plans' | 'settings'>('overview');
+  const [activeView, setActiveView] = useState<'overview' | 'pos' | 'appointments' | 'barbers' | 'services-catalog' | 'inventory' | 'customers' | 'subscriptions' | 'expenses' | 'financial' | 'reports' | 'plans' | 'settings'>('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
@@ -394,8 +412,12 @@ const AdminDashboard = () => {
     { id: 'pos', label: 'Caixa (PDV)', icon: CreditCard },
     { id: 'appointments', label: 'Agendamentos', icon: Calendar },
     { id: 'barbers', label: 'Gestão de Equipe', icon: Scissors },
+    { id: 'services-catalog', label: 'Catálogo de Serviços', icon: Star },
     { id: 'inventory', label: 'Cadastro de Produtos', icon: Package },
     { id: 'customers', label: 'Clientes', icon: Users },
+    { id: 'subscriptions', label: 'Assinaturas', icon: History },
+    { id: 'expenses', label: 'Despesas', icon: DollarSign },
+    { id: 'financial', label: 'Financeiro', icon: PieChart },
     { id: 'reports', label: 'Relatórios', icon: FileText },
     { id: 'plans', label: 'Cadastro de Planos', icon: Crown },
     { id: 'settings', label: 'Configurações', icon: Settings },
@@ -478,6 +500,10 @@ const AdminDashboard = () => {
             {activeView === 'barbers' && <BarberManager />}
             {activeView === 'inventory' && <InventoryManager />}
             {activeView === 'customers' && <CustomerManager />}
+            {activeView === 'services-catalog' && <ServicesCatalogManager />}
+            {activeView === 'subscriptions' && <SubscriptionsView />}
+            {activeView === 'expenses' && <ExpensesManager />}
+            {activeView === 'financial' && <FinancialReport />}
             {activeView === 'reports' && <ReportsView />}
             {activeView === 'plans' && <PlansManager />}
             {activeView === 'settings' && <SettingsView />}
@@ -631,12 +657,15 @@ const POSSystem = () => {
   const [serviceData, setServiceData] = useState({ barberId: '', customerId: '', serviceType: '', price: '' });
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
   const [receipt, setReceipt] = useState<{ text: string, phone: string } | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState('dinheiro');
+  const [serviceCatalog, setServiceCatalog] = useState<ServiceCatalogItem[]>([]);
 
   useEffect(() => {
     fetch('/api/products').then(res => res.json()).then(setProducts);
     fetch('/api/barbers').then(res => res.json()).then(setBarbers);
     fetch('/api/plans').then(res => res.json()).then(setPlans);
     fetch('/api/customers').then(res => res.json()).then(setCustomers);
+    fetch('/api/services-catalog').then(res => res.json()).then(d => setServiceCatalog(Array.isArray(d) ? d : []));
   }, []);
 
   const addToCart = (product: Product) => {
@@ -667,7 +696,7 @@ const POSSystem = () => {
 
     for (const item of cart) {
       if (item.product) {
-        await fetch('/api/pos/sale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ productId: item.product.id, quantity: item.quantity }) });
+        await fetch('/api/pos/sale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ productId: item.product.id, quantity: item.quantity, payment_method: paymentMethod }) });
         const itemTotal = item.product.price * item.quantity;
         total += itemTotal;
         itemsText += `- ${item.quantity}x ${item.product.name}: R$ ${itemTotal.toFixed(2)}\n`;
@@ -697,7 +726,7 @@ const POSSystem = () => {
     const customer = customers.find(c => c.id.toString() === serviceData.customerId);
     if (!customer) return;
 
-    const res = await fetch('/api/pos/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...serviceData, customerName: customer.name, price: Number(serviceData.price) }) });
+    const res = await fetch('/api/pos/service', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...serviceData, customerName: customer.name, price: Number(serviceData.price), payment_method: paymentMethod }) });
     if (res.ok) { 
       const barber = barbers.find(b => b.id.toString() === serviceData.barberId);
       const receiptText = `*MA BEARD STYLE - COMPROVANTE*\n\nOlá ${customer.name}!\n\n*Serviço:* ${serviceData.serviceType}\n*Barbeiro:* ${barber?.name}\n*Total: R$ ${Number(serviceData.price).toFixed(2)}*\n\nObrigado pela preferência!`;
@@ -720,7 +749,14 @@ const POSSystem = () => {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+    <>
+      <div className="mb-6 p-4 rounded-2xl bg-zinc-900/40 border border-white/5 flex items-center gap-4 flex-wrap">
+        <span className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">Forma de Pagamento:</span>
+        {['dinheiro', 'pix', 'credito', 'debito'].map(m => (
+          <button key={m} onClick={() => setPaymentMethod(m)} className={cn("px-4 py-2 rounded-xl text-sm font-bold transition-all border", paymentMethod === m ? "bg-white text-black border-white" : "bg-white/5 text-gray-400 border-white/10 hover:border-white/30")}>{m === 'dinheiro' ? 'Dinheiro' : m === 'pix' ? 'PIX' : m === 'credito' ? 'Crédito' : 'Débito'}</button>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
       {receipt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl text-center">
@@ -800,13 +836,14 @@ const POSSystem = () => {
           <div><label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Barbeiro</label><select value={serviceData.barberId} onChange={e => setServiceData({...serviceData, barberId: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-white transition-colors"><option value="">Selecione um barbeiro</option>{barbers.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
           <div><label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Cliente</label><select value={serviceData.customerId} onChange={e => setServiceData({...serviceData, customerId: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-white transition-colors"><option value="">Selecione um cliente</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.phone || 'Sem telefone'})</option>)}</select></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Serviço</label><input type="text" placeholder="Ex: Corte Degradê" value={serviceData.serviceType} onChange={e => setServiceData({...serviceData, serviceType: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-white transition-colors" /></div>
+            <div><label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Serviço</label><select value={serviceData.serviceType} onChange={e => { const svc = serviceCatalog.find(s => s.name === e.target.value); setServiceData({...serviceData, serviceType: e.target.value, price: svc ? String(svc.price) : serviceData.price}); }} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-white transition-colors"><option value="">Selecione...</option>{serviceCatalog.map(s => <option key={s.id} value={s.name}>{s.name} - R$ {Number(s.price).toFixed(2)}</option>)}</select></div>
             <div><label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Valor (R$)</label><input type="number" placeholder="0.00" value={serviceData.price} onChange={e => setServiceData({...serviceData, price: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm focus:outline-none focus:border-white transition-colors" /></div>
           </div>
           <button onClick={finalizeService} disabled={!serviceData.barberId || !serviceData.price || !serviceData.customerId} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50 mt-4">Registrar Serviço</button>
         </div>
       </div>
     </div>
+    </>
   );
 };
 
@@ -1103,6 +1140,391 @@ const ReportsView = () => {
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+const ServicesCatalogManager = () => {
+  const [services, setServices] = useState<ServiceCatalogItem[]>([]);
+  const [editing, setEditing] = useState<Partial<ServiceCatalogItem> | null>(null);
+  const fetchServices = () => fetch('/api/services-catalog').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
+  useEffect(() => { fetchServices(); }, []);
+
+  const handleSave = async () => {
+    if (!editing) return;
+    const method = editing.id ? 'PUT' : 'POST';
+    const url = editing.id ? `/api/services-catalog/${editing.id}` : '/api/services-catalog';
+    await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
+    setEditing(null);
+    fetchServices();
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Deseja excluir este serviço?')) return;
+    await fetch(`/api/services-catalog/${id}`, { method: 'DELETE' });
+    fetchServices();
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex justify-end">
+        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
+      </div>
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
+        <table className="w-full text-left">
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Serviço</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Duração</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <tbody className="divide-y divide-white/5">
+            {services.map(s => (
+              <tr key={s.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
+                <td className="px-8 py-6"><div><span className="font-medium text-white">{s.name}</span>{s.description && <p className="text-xs text-gray-500 mt-1">{s.description}</p>}</div></td>
+                <td className="px-8 py-6">R$ {Number(s.price).toFixed(2)}</td>
+                <td className="px-8 py-6">{s.duration_minutes} min</td>
+                <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(s)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(s.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td>
+              </tr>
+            ))}
+            {services.length === 0 && <tr><td colSpan={4} className="px-8 py-12 text-center text-gray-500">Nenhum serviço cadastrado.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Serviço' : 'Novo Serviço'}</h3>
+            <div className="space-y-4">
+              <input placeholder="Nome do Serviço" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <div className="grid grid-cols-2 gap-4">
+                <input type="number" placeholder="Preço (R$)" value={editing.price || ''} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                <input type="number" placeholder="Duração (min)" value={editing.duration_minutes || 60} onChange={e => setEditing({...editing, duration_minutes: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <textarea placeholder="Descrição (opcional)" value={editing.description || ''} onChange={e => setEditing({...editing, description: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm h-20 resize-none" />
+              <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const SubscriptionsView = () => {
+  const [subs, setSubs] = useState<Subscription[]>([]);
+  const fetchSubs = () => fetch('/api/subscriptions').then(r => r.json()).then(d => setSubs(Array.isArray(d) ? d : []));
+  useEffect(() => { fetchSubs(); }, []);
+
+  const active = subs.filter(s => s.status === 'active');
+  const totalMRR = active.reduce((acc, s) => acc + (Number(s.plan_price) || 0), 0);
+
+  return (
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <StatCard label="Assinaturas Ativas" value={active.length} icon={Users} />
+        <StatCard label="MRR (Receita Mensal)" value={`R$ ${totalMRR.toFixed(2)}`} icon={TrendingUp} />
+        <StatCard label="Total Registros" value={subs.length} icon={History} />
+      </div>
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
+        <table className="w-full text-left">
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Cliente</th><th className="px-8 py-6 font-medium">Plano</th><th className="px-8 py-6 font-medium">Valor</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium">Data</th></tr></thead>
+          <tbody className="divide-y divide-white/5">
+            {subs.map(s => (
+              <tr key={s.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors">
+                <td className="px-8 py-6 font-medium text-white">{s.customer_email}</td>
+                <td className="px-8 py-6">{s.plan_name || s.plan_id}</td>
+                <td className="px-8 py-6">R$ {Number(s.plan_price || 0).toFixed(2)}/mês</td>
+                <td className="px-8 py-6"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-bold uppercase", s.status === 'active' ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500/10 text-red-500")}>{s.status === 'active' ? 'Ativo' : s.status}</span></td>
+                <td className="px-8 py-6 text-gray-500">{new Date(s.created_at).toLocaleDateString('pt-BR')}</td>
+              </tr>
+            ))}
+            {subs.length === 0 && <tr><td colSpan={5} className="px-8 py-12 text-center text-gray-500">Nenhuma assinatura encontrada.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+const ExpensesManager = () => {
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [editing, setEditing] = useState<Partial<Expense> | null>(null);
+  const categories = ['Aluguel', 'Energia', 'Água', 'Internet', 'Materiais', 'Manutenção', 'Marketing', 'Outros'];
+
+  const fetchExpenses = () => fetch('/api/expenses').then(r => r.json()).then(d => setExpenses(Array.isArray(d) ? d : []));
+  useEffect(() => { fetchExpenses(); }, []);
+
+  const handleSave = async () => {
+    if (!editing) return;
+    await fetch('/api/expenses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
+    setEditing(null);
+    fetchExpenses();
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Excluir despesa?')) return;
+    await fetch(`/api/expenses/${id}`, { method: 'DELETE' });
+    fetchExpenses();
+  };
+
+  const total = expenses.reduce((acc, e) => acc + Number(e.amount), 0);
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/20">
+          <span className="text-xs text-red-400 uppercase tracking-widest font-bold">Total Despesas</span>
+          <p className="text-2xl font-light text-red-400 mt-1">R$ {total.toFixed(2)}</p>
+        </div>
+        <button onClick={() => setEditing({ description: '', amount: 0, category: 'Outros', date: new Date().toISOString().split('T')[0] })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Nova Despesa</button>
+      </div>
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
+        <table className="w-full text-left">
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Data</th><th className="px-8 py-6 font-medium">Descrição</th><th className="px-8 py-6 font-medium">Categoria</th><th className="px-8 py-6 font-medium">Valor</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <tbody className="divide-y divide-white/5">
+            {expenses.map(e => (
+              <tr key={e.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
+                <td className="px-8 py-6 text-white font-medium">{new Date(e.date).toLocaleDateString('pt-BR')}</td>
+                <td className="px-8 py-6">{e.description}</td>
+                <td className="px-8 py-6"><span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 font-bold uppercase">{e.category}</span></td>
+                <td className="px-8 py-6 text-red-400 font-medium">R$ {Number(e.amount).toFixed(2)}</td>
+                <td className="px-8 py-6 text-right"><button onClick={() => handleDelete(e.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"><Trash2 className="w-4 h-4" /></button></td>
+              </tr>
+            ))}
+            {expenses.length === 0 && <tr><td colSpan={5} className="px-8 py-12 text-center text-gray-500">Nenhuma despesa registrada.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-medium mb-6">Nova Despesa</h3>
+            <div className="space-y-4">
+              <input placeholder="Descrição" value={editing.description || ''} onChange={e => setEditing({...editing, description: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <div className="grid grid-cols-2 gap-4">
+                <input type="number" placeholder="Valor (R$)" value={editing.amount || ''} onChange={e => setEditing({...editing, amount: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                <input type="date" value={editing.date || ''} onChange={e => setEditing({...editing, date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <select value={editing.category || 'Outros'} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const FinancialReport = () => {
+  const [data, setData] = useState<{ revenue: number; expenses: number; profit: number; margin: number } | null>(null);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+
+  useEffect(() => {
+    fetch('/api/reports/financial').then(r => r.json()).then(setData);
+    fetch('/api/expenses').then(r => r.json()).then(d => setExpenses(Array.isArray(d) ? d : []));
+  }, []);
+
+  if (!data) return <div className="text-white">Carregando relatório financeiro...</div>;
+
+  const expensesByCategory: Record<string, number> = {};
+  expenses.forEach(e => {
+    expensesByCategory[e.category] = (expensesByCategory[e.category] || 0) + Number(e.amount);
+  });
+
+  return (
+    <div className="space-y-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard label="Receita Bruta" value={`R$ ${data.revenue.toFixed(2)}`} icon={TrendingUp} />
+        <StatCard label="Despesas Totais" value={`R$ ${data.expenses.toFixed(2)}`} icon={DollarSign} variant={data.expenses > data.revenue ? 'warning' : 'default'} />
+        <StatCard label="Lucro Líquido" value={`R$ ${data.profit.toFixed(2)}`} icon={DollarSign} trend={data.profit >= 0 ? `+${data.margin.toFixed(1)}%` : `${data.margin.toFixed(1)}%`} />
+        <StatCard label="Margem" value={`${data.margin.toFixed(1)}%`} icon={PieChart} />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
+          <h3 className="text-xl font-medium mb-6">DRE Simplificado</h3>
+          <div className="space-y-4">
+            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">Receita (Serviços + Vendas)</span><span className="text-emerald-400 font-bold">R$ {data.revenue.toFixed(2)}</span></div>
+            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">(-) Comissões de Barbeiros</span><span className="text-red-400">incluído abaixo</span></div>
+            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">(-) Despesas Operacionais</span><span className="text-red-400">R$ {data.expenses.toFixed(2)}</span></div>
+            <div className="flex justify-between py-3 text-lg"><span className="font-bold text-white">= Resultado</span><span className={cn("font-bold", data.profit >= 0 ? "text-emerald-400" : "text-red-400")}>R$ {data.profit.toFixed(2)}</span></div>
+          </div>
+        </div>
+        <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
+          <h3 className="text-xl font-medium mb-6">Despesas por Categoria</h3>
+          <div className="space-y-3">
+            {Object.entries(expensesByCategory).sort((a, b) => b[1] - a[1]).map(([cat, val]) => (
+              <div key={cat} className="flex flex-col gap-1">
+                <div className="flex justify-between text-sm"><span className="text-white">{cat}</span><span className="text-red-400 font-bold">R$ {val.toFixed(2)}</span></div>
+                <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden"><div className="h-full bg-red-500/60" style={{ width: `${data.expenses > 0 ? (val / data.expenses) * 100 : 0}%` }} /></div>
+              </div>
+            ))}
+            {Object.keys(expensesByCategory).length === 0 && <p className="text-gray-500 text-sm">Nenhuma despesa registrada ainda.</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const PublicBooking = () => {
+  const [step, setStep] = useState(1);
+  const [services, setServices] = useState<ServiceCatalogItem[]>([]);
+  const [barbers, setBarbers] = useState<{id: number; name: string; specialty: string; photo_url?: string}[]>([]);
+  const [slots, setSlots] = useState<string[]>([]);
+  const [selectedService, setSelectedService] = useState<ServiceCatalogItem | null>(null);
+  const [selectedBarber, setSelectedBarber] = useState<{id: number; name: string; specialty: string; photo_url?: string} | null>(null);
+  const [selectedDate, setSelectedDate] = useState('');
+  const [selectedTime, setSelectedTime] = useState('');
+  const [clientData, setClientData] = useState({ name: '', phone: '', email: '' });
+  const [loading, setLoading] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/public/services').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
+    fetch('/api/public/barbers').then(r => r.json()).then(d => setBarbers(Array.isArray(d) ? d : []));
+  }, []);
+
+  useEffect(() => {
+    if (selectedBarber && selectedDate) {
+      fetch(`/api/public/available-slots?barberId=${selectedBarber.id}&date=${selectedDate}`).then(r => r.json()).then(d => setSlots(Array.isArray(d) ? d : []));
+    }
+  }, [selectedBarber, selectedDate]);
+
+  const handleConfirm = async () => {
+    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone) return;
+    setLoading(true);
+    try {
+      const custRes = await fetch('/api/customers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clientData) });
+      const custData = await custRes.json();
+      if (!custData.id) { alert('Erro ao registrar dados. Tente novamente.'); return; }
+
+      const aptRes = await fetch('/api/appointments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        customer_id: custData.id,
+        barber_id: selectedBarber.id,
+        service_type: selectedService.name,
+        appointment_date: `${selectedDate}T${selectedTime}:00`,
+        status: 'pending'
+      })});
+
+      if (aptRes.ok) setConfirmed(true);
+      else alert('Erro ao confirmar agendamento. Tente novamente.');
+    } catch { alert('Erro de conexão. Tente novamente.'); }
+    finally { setLoading(false); }
+  };
+
+  const today = new Date().toISOString().split('T')[0];
+  const stepLabels = ['Serviço', 'Barbeiro', 'Data/Hora', 'Seus Dados', 'Confirmar'];
+
+  if (confirmed) {
+    return (
+      <div className="pt-24 pb-20 px-4 max-w-xl mx-auto text-center">
+        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
+          <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mx-auto mb-6"><Check className="w-10 h-10 text-emerald-500" /></div>
+          <h2 className="text-3xl font-light mb-4">Agendamento Confirmado!</h2>
+          <p className="text-gray-400 mb-2">{selectedService?.name} com {selectedBarber?.name}</p>
+          <p className="text-white text-lg font-medium mb-8">{new Date(`${selectedDate}T${selectedTime}:00`).toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' })}</p>
+          <p className="text-gray-500 text-sm">Você receberá um lembrete por WhatsApp. Até lá!</p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pt-24 pb-20 px-4 max-w-3xl mx-auto">
+      <div className="text-center mb-10">
+        <h2 className="text-3xl md:text-4xl font-light mb-2">Agende seu Horário</h2>
+        <p className="text-gray-500">Escolha o serviço, barbeiro e horário ideal para você.</p>
+      </div>
+
+      <div className="flex justify-center gap-2 mb-10">
+        {stepLabels.map((s, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-colors", i + 1 <= step ? "bg-white text-black" : "bg-white/10 text-gray-500")}>{i + 1}</div>
+            {i < stepLabels.length - 1 && <div className={cn("w-8 h-px", i + 1 < step ? "bg-white" : "bg-white/10")} />}
+          </div>
+        ))}
+      </div>
+
+      <AnimatePresence mode="wait">
+        <motion.div key={step} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+
+          {step === 1 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {services.map(s => (
+                <button key={s.id} onClick={() => { setSelectedService(s); setStep(2); }} className={cn("p-6 rounded-2xl border text-left transition-all hover:border-white/30", selectedService?.id === s.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
+                  <h4 className="text-lg font-medium text-white mb-1">{s.name}</h4>
+                  {s.description && <p className="text-xs text-gray-500 mb-3">{s.description}</p>}
+                  <div className="flex items-center gap-4 text-sm"><span className="text-emerald-400 font-bold">R$ {Number(s.price).toFixed(2)}</span><span className="text-gray-500">{s.duration_minutes} min</span></div>
+                </button>
+              ))}
+              {services.length === 0 && <p className="text-gray-500 col-span-2 text-center py-12">Nenhum serviço disponível no momento.</p>}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {barbers.map(b => (
+                <button key={b.id} onClick={() => { setSelectedBarber(b); setStep(3); }} className={cn("p-6 rounded-2xl border text-center transition-all hover:border-white/30", selectedBarber?.id === b.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
+                  <div className="w-20 h-20 rounded-full overflow-hidden bg-white/10 border border-white/10 mx-auto mb-4">{b.photo_url ? <img src={b.photo_url} alt={b.name} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-2xl font-bold text-gray-400">{b.name?.charAt(0)}</div>}</div>
+                  <h4 className="text-lg font-medium text-white">{b.name}</h4>
+                  <p className="text-xs text-gray-500 mt-1">{b.specialty}</p>
+                </button>
+              ))}
+              {barbers.length === 0 && <p className="text-gray-500 col-span-3 text-center py-12">Nenhum barbeiro disponível.</p>}
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="space-y-6">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Escolha a Data</label>
+                <input type="date" min={today} value={selectedDate} onChange={e => { setSelectedDate(e.target.value); setSelectedTime(''); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm max-w-xs" />
+              </div>
+              {selectedDate && (
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 block">Horários Disponíveis</label>
+                  <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
+                    {slots.map(slot => (
+                      <button key={slot} onClick={() => { setSelectedTime(slot); setStep(4); }} className={cn("py-3 px-4 rounded-xl border text-sm font-medium transition-all", selectedTime === slot ? "border-white bg-white text-black" : "border-white/10 hover:border-white/30 text-white")}>{slot}</button>
+                    ))}
+                    {slots.length === 0 && <p className="text-gray-500 col-span-5 text-center py-6">Nenhum horário disponível nesta data.</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="max-w-md mx-auto space-y-4">
+              <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => setClientData({...clientData, name: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => setClientData({...clientData, phone: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="email" placeholder="E-mail (opcional)" value={clientData.email} onChange={e => setClientData({...clientData, email: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <button onClick={() => { if (clientData.name && clientData.phone) setStep(5); else alert('Preencha nome e WhatsApp.'); }} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all">Continuar</button>
+            </div>
+          )}
+
+          {step === 5 && (
+            <div className="max-w-md mx-auto bg-zinc-900/40 border border-white/10 rounded-[2.5rem] p-8">
+              <h3 className="text-xl font-medium mb-6 text-center">Confirme seu Agendamento</h3>
+              <div className="space-y-4 mb-8">
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Serviço</span><span className="text-white font-medium">{selectedService?.name}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Barbeiro</span><span className="text-white font-medium">{selectedBarber?.name}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Data/Hora</span><span className="text-white font-medium">{selectedDate && selectedTime ? new Date(`${selectedDate}T${selectedTime}:00`).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Valor</span><span className="text-emerald-400 font-bold">R$ {Number(selectedService?.price || 0).toFixed(2)}</span></div>
+                <div className="h-px bg-white/10" />
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Nome</span><span className="text-white">{clientData.name}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">WhatsApp</span><span className="text-white">{clientData.phone}</span></div>
+              </div>
+              <button onClick={handleConfirm} disabled={loading} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50">{loading ? 'Confirmando...' : 'Confirmar Agendamento'}</button>
+            </div>
+          )}
+
+        </motion.div>
+      </AnimatePresence>
+
+      {step > 1 && !confirmed && (
+        <div className="mt-8 text-center">
+          <button onClick={() => setStep(step - 1)} className="text-sm text-gray-500 hover:text-white transition-colors flex items-center gap-1 mx-auto"><ArrowRight className="w-4 h-4 rotate-180" /> Voltar</button>
+        </div>
+      )}
     </div>
   );
 };
@@ -1884,7 +2306,9 @@ export default function App() {
       <main>
         <AnimatePresence mode="wait">
           {activeTab === 'landing' ? (
-            <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage /></motion.div>
+            <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
+          ) : activeTab === 'booking' ? (
+            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking /></motion.div>
           ) : (
             !session ? (
               <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><Auth /></motion.div>

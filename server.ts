@@ -696,6 +696,33 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Services Catalog CRUD
+  app.get("/api/services-catalog", async (req, res) => {
+    const { data, error } = await supabase.from('services_catalog').select('*').order('name');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  });
+
+  app.post("/api/services-catalog", async (req, res) => {
+    const { name, price, duration_minutes, description } = req.body;
+    const { data, error } = await supabase.from('services_catalog').insert([{ name, price, duration_minutes: duration_minutes || 60, description }]).select();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data[0]);
+  });
+
+  app.put("/api/services-catalog/:id", async (req, res) => {
+    const { name, price, duration_minutes, description, active } = req.body;
+    const { error } = await supabase.from('services_catalog').update({ name, price, duration_minutes, description, active }).eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  });
+
+  app.delete("/api/services-catalog/:id", async (req, res) => {
+    const { error } = await supabase.from('services_catalog').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  });
+
   // POS (Caixa)
   app.post("/api/pos/sale", async (req, res) => {
     const { productId, quantity } = req.body;
@@ -706,15 +733,16 @@ async function startServer() {
     }
 
     const totalPrice = product.price * quantity;
+    const payment_method = req.body.payment_method || 'dinheiro';
     
     await supabase.from('products').update({ stock: product.stock - quantity }).eq('id', productId);
-    await supabase.from('sales').insert([{ product_id: productId, quantity, total_price: totalPrice }]);
+    await supabase.from('sales').insert([{ product_id: productId, quantity, total_price: totalPrice, payment_method }]);
     
     res.json({ success: true });
   });
 
   app.post("/api/pos/service", async (req, res) => {
-    const { barberId, customerName, serviceType, price } = req.body;
+    const { barberId, customerName, serviceType, price, payment_method } = req.body;
     const { data: barber } = await supabase.from('barbers').select('*').eq('id', barberId).single();
     
     if (!barber) return res.status(404).json({ error: "Barbeiro não encontrado" });
@@ -726,7 +754,8 @@ async function startServer() {
       customer_name: customerName,
       service_type: serviceType,
       price,
-      commission_amount: commissionAmount
+      commission_amount: commissionAmount,
+      payment_method: payment_method || 'dinheiro'
     }]);
     
     if (error) return res.status(500).json({ error: error.message });
@@ -917,11 +946,23 @@ async function startServer() {
     res.json(data || []);
   });
 
+  app.get("/api/public/services", async (req, res) => {
+    const { data } = await supabase.from('services_catalog').select('*').eq('active', true).order('name');
+    res.json(data || []);
+  });
+
   app.get("/api/public/available-slots", async (req, res) => {
     const { barberId, date } = req.query;
-    // Lógica simplificada: 09:00 às 18:00, de 1 em 1 hora
-    const slots = ["09:00", "10:00", "11:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00"];
-    
+
+    const { data: cfgRows } = await supabase.from('config').select('key, value').in('key', ['working_hours_start', 'working_hours_end']);
+    const cfg: Record<string, string> = {};
+    cfgRows?.forEach(r => { cfg[r.key] = r.value; });
+
+    const startH = parseInt((cfg.working_hours_start || '09:00').split(':')[0]);
+    const endH = parseInt((cfg.working_hours_end || '18:00').split(':')[0]);
+    const slots: string[] = [];
+    for (let h = startH; h <= endH; h++) slots.push(`${h.toString().padStart(2, '0')}:00`);
+
     const { data: appointments } = await supabase
       .from('appointments')
       .select('appointment_date')
