@@ -554,6 +554,12 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.delete("/api/customers/:id", async (req, res) => {
+    const { error } = await supabase.from('customers').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  });
+
   // POS (Caixa) - Manual Subscription
   app.post("/api/pos/subscribe", async (req, res) => {
     const { customerEmail, planId } = req.body;
@@ -665,10 +671,10 @@ async function startServer() {
   });
 
   app.post("/api/products", async (req, res) => {
-    const { name, cost, price, stock, min_stock } = req.body;
+    const { name, cost, price, stock, min_stock, supplier, category, entry_date } = req.body;
     const { data, error } = await supabase
       .from('products')
-      .insert([{ name, cost, price, stock, min_stock }])
+      .insert([{ name, cost, price, stock, min_stock, supplier, category: category || 'Geral', entry_date: entry_date || new Date().toISOString().split('T')[0] }])
       .select();
     
     if (error) return res.status(500).json({ error: error.message });
@@ -676,14 +682,36 @@ async function startServer() {
   });
 
   app.put("/api/products/:id", async (req, res) => {
-    const { name, cost, price, stock, min_stock } = req.body;
+    const { name, cost, price, stock, min_stock, supplier, category, entry_date } = req.body;
     const { error } = await supabase
       .from('products')
-      .update({ name, cost, price, stock, min_stock })
+      .update({ name, cost, price, stock, min_stock, supplier, category, entry_date })
       .eq('id', req.params.id);
     
     if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
+  });
+
+  // Stock entry (entrada de mercadoria)
+  app.post("/api/products/:id/stock-entry", async (req, res) => {
+    const { quantity, reason, unit_cost } = req.body;
+    const id = req.params.id;
+    if (!quantity || quantity <= 0) return res.status(400).json({ error: 'Quantidade inválida' });
+
+    const { data: product } = await supabase.from('products').select('stock').eq('id', id).single();
+    if (!product) return res.status(404).json({ error: 'Produto não encontrado' });
+
+    const newStock = (product.stock || 0) + Number(quantity);
+    const { error: updateErr } = await supabase.from('products').update({ stock: newStock }).eq('id', id);
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    await supabase.from('stock_movements').insert([{ product_id: id, type: 'entrada', quantity, reason: reason || 'Entrada manual', unit_cost }]);
+    res.json({ success: true, new_stock: newStock });
+  });
+
+  app.get("/api/products/:id/movements", async (req, res) => {
+    const { data } = await supabase.from('stock_movements').select('*').eq('product_id', req.params.id).order('created_at', { ascending: false });
+    res.json(data || []);
   });
 
   app.delete("/api/products/:id", async (req, res) => {
@@ -902,6 +930,41 @@ async function startServer() {
   });
 
   // --- Advanced Financial Routes ---
+
+  // Stripe: Sync plans from Stripe dashboard
+  app.get("/api/stripe/sync-plans", async (req, res) => {
+    if (!stripe) return res.status(503).json({ error: 'Stripe não configurada' });
+    try {
+      const products = await stripe.products.list({ active: true, limit: 20 });
+      const synced: any[] = [];
+
+      for (const product of products.data) {
+        const prices = await stripe.prices.list({ product: product.id, active: true, limit: 1 });
+        const price = prices.data[0];
+        if (!price) continue;
+
+        const planData = {
+          id: product.id.replace('prod_', '').toLowerCase().slice(0, 20),
+          name: product.name,
+          description: product.description || '',
+          price: price.unit_amount ? price.unit_amount / 100 : 0,
+          benefits: product.metadata?.benefits ? JSON.parse(product.metadata.benefits) : [],
+          stripe_product_id: product.id,
+          stripe_price_id: price.id,
+        };
+
+        const { data, error } = await (supabase as any).from('plans')
+          .upsert(planData, { onConflict: 'stripe_product_id' })
+          .select();
+
+        if (!error) synced.push({ ...planData, dbId: data?.[0]?.id });
+      }
+
+      res.json({ success: true, count: synced.length, plans: synced });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   // Expenses CRUD
   app.get("/api/expenses", async (req, res) => {

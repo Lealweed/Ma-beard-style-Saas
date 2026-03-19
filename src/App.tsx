@@ -4,7 +4,7 @@ import {
   Users, ShoppingBag, AlertTriangle, Menu, X, Plus, Trash2, Edit2, 
   DollarSign, CreditCard, History, Settings, LogOut, ChevronRight,
   Search, Filter, MoreVertical, Save, ArrowRight, FileText, PieChart,
-  Lock, Mail, Key, Star, Calendar, MessageCircle
+  Lock, Mail, Key, Star, Calendar, MessageCircle, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -65,6 +65,9 @@ interface Product {
   price: number;
   stock: number;
   min_stock: number;
+  supplier?: string;
+  category?: string;
+  entry_date?: string;
 }
 
 interface Subscription {
@@ -592,6 +595,7 @@ const AppointmentsManager = () => {
               <th className="px-8 py-6 font-medium">Cliente</th>
               <th className="px-8 py-6 font-medium">Barbeiro</th>
               <th className="px-8 py-6 font-medium">Serviço</th>
+              <th className="px-8 py-6 font-medium">Status</th>
               <th className="px-8 py-6 font-medium text-right">Ações</th>
             </tr>
           </thead>
@@ -602,20 +606,27 @@ const AppointmentsManager = () => {
                 <td className="px-8 py-6">{apt.customer_name}</td>
                 <td className="px-8 py-6">{apt.barber_name}</td>
                 <td className="px-8 py-6">{apt.service_type}</td>
+                <td className="px-8 py-6">
+                  <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase',
+                    apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' :
+                    apt.status === 'cancelled' ? 'bg-red-500/10 text-red-500' :
+                    apt.status === 'confirmed' ? 'bg-blue-500/10 text-blue-400' :
+                    'bg-amber-500/10 text-amber-400'
+                  )}>
+                    {apt.status === 'completed' ? 'Concluído' : apt.status === 'cancelled' ? 'Cancelado' : apt.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
+                  </span>
+                </td>
                 <td className="px-8 py-6 text-right">
                   <div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => sendWhatsAppReminder(apt)} className="p-2 hover:bg-emerald-500/10 rounded-lg text-gray-400 hover:text-emerald-500 transition-colors" title="Lembrete WhatsApp">
-                      <MessageCircle className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => handleDelete(apt.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors" title="Cancelar">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <button onClick={() => sendWhatsAppReminder(apt)} className="p-2 hover:bg-emerald-500/10 rounded-lg text-gray-400 hover:text-emerald-500 transition-colors" title="Lembrete WhatsApp"><MessageCircle className="w-4 h-4" /></button>
+                    <button onClick={() => setEditing(apt)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors" title="Editar"><Edit2 className="w-4 h-4" /></button>
+                    <button onClick={() => handleDelete(apt.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors" title="Excluir"><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
             ))}
             {appointments.length === 0 && (
-              <tr><td colSpan={5} className="px-8 py-12 text-center text-gray-500">Nenhum agendamento encontrado.</td></tr>
+              <tr><td colSpan={6} className="px-8 py-12 text-center text-gray-500">Nenhum agendamento encontrado.</td></tr>
             )}
           </tbody>
         </table>
@@ -624,7 +635,7 @@ const AppointmentsManager = () => {
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
-            <h3 className="text-xl font-medium mb-6">Novo Agendamento</h3>
+            <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Agendamento' : 'Novo Agendamento'}</h3>
             <div className="space-y-4">
               <select value={editing.customer_id || ''} onChange={e => setEditing({...editing, customer_id: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                 <option value="">Selecione o Cliente</option>
@@ -634,8 +645,16 @@ const AppointmentsManager = () => {
                 <option value="">Selecione o Barbeiro</option>
                 {barbers.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
-              <input placeholder="Tipo de Serviço (ex: Corte e Barba)" value={editing.service_type} onChange={e => setEditing({...editing, service_type: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input type="datetime-local" value={editing.appointment_date} onChange={e => setEditing({...editing, appointment_date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Tipo de Serviço (ex: Corte e Barba)" value={editing.service_type || ''} onChange={e => setEditing({...editing, service_type: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="datetime-local" value={editing.appointment_date ? editing.appointment_date.slice(0, 16) : ''} onChange={e => setEditing({...editing, appointment_date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              {editing.id && (
+                <select value={editing.status || 'pending'} onChange={e => setEditing({...editing, status: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                  <option value="pending">Pendente</option>
+                  <option value="confirmed">Confirmado</option>
+                  <option value="completed">Concluído</option>
+                  <option value="cancelled">Cancelado</option>
+                </select>
+              )}
               <div className="flex gap-4 pt-4">
                 <button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button>
                 <button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button>
@@ -967,62 +986,117 @@ const InventoryManager = () => {
   const [editing, setEditing] = useState<Partial<Product> | null>(null);
   const [deleteStatus, setDeleteStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [deletingProductId, setDeletingProductId] = useState<number | null>(null);
+  const [stockEntry, setStockEntry] = useState<{ product: Product; quantity: number; reason: string; unit_cost: string } | null>(null);
+  const [savingEntry, setSavingEntry] = useState(false);
+  const CATEGORIES = ['Geral', 'Pomadas', 'Óleos', 'Shampoo', 'Lâminas', 'Equipamentos', 'Outros'];
+
   const fetchProducts = () => fetch('/api/products').then(res => res.json()).then(setProducts);
   useEffect(() => { fetchProducts(); }, []);
+
   const handleSave = async () => {
     const method = editing?.id ? 'PUT' : 'POST';
     const url = editing?.id ? `/api/products/${editing.id}` : '/api/products';
     await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
     setEditing(null); fetchProducts();
   };
+
   const handleDeleteProduct = async (productId: number) => {
     const confirmed = window.confirm('Tem certeza que deseja excluir este produto?');
     if (!confirmed) return;
-
     setDeletingProductId(productId);
-
     if (!isSupabaseConfigured) {
       setDeleteStatus({ type: 'error', message: 'Supabase não configurado para excluir produto.' });
       setDeletingProductId(null);
       return;
     }
-
     const { error } = await supabase.from('products').delete().eq('id', productId);
     if (error) {
       setDeleteStatus({ type: 'error', message: `Erro ao excluir produto: ${error.message}` });
       setDeletingProductId(null);
       return;
     }
-
     setProducts(prev => prev.filter(product => product.id !== productId));
     setDeleteStatus({ type: 'success', message: 'Produto excluído com sucesso.' });
     setDeletingProductId(null);
   };
+
+  const handleStockEntry = async () => {
+    if (!stockEntry || !stockEntry.quantity) return;
+    setSavingEntry(true);
+    const res = await fetch(`/api/products/${stockEntry.product.id}/stock-entry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: stockEntry.quantity, reason: stockEntry.reason, unit_cost: stockEntry.unit_cost ? Number(stockEntry.unit_cost) : undefined }),
+    });
+    if (res.ok) { setStockEntry(null); fetchProducts(); }
+    else { const err = await res.json(); alert(err.error || 'Erro ao registrar entrada'); }
+    setSavingEntry(false);
+  };
+
   return (
     <div className="space-y-8">
-      <div className="flex justify-end"><button onClick={() => setEditing({ name: '', cost: 0, price: 0, stock: 0, min_stock: 5 })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Produto</button></div>
+      <div className="flex justify-end"><button onClick={() => setEditing({ name: '', cost: 0, price: 0, stock: 0, min_stock: 5, supplier: '', category: 'Geral', entry_date: new Date().toISOString().split('T')[0] })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Produto</button></div>
       {deleteStatus && (
-        <div className={cn(
-          'p-4 rounded-xl border text-sm',
-          deleteStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'
-        )}>
-          {deleteStatus.message}
-        </div>
+        <div className={cn('p-4 rounded-xl border text-sm', deleteStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400')}>{deleteStatus.message}</div>
       )}
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
-          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Produto</th><th className="px-8 py-6 font-medium">Estoque</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
-          <tbody className="divide-y divide-white/5">{products.map((product) => (<tr key={product.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white">{product.name}</td><td className="px-8 py-6">{product.stock} un.</td><td className="px-8 py-6">R$ {product.price}</td><td className="px-8 py-6"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-bold uppercase", product.stock <= product.min_stock ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500")}>{product.stock <= product.min_stock ? 'Baixo' : 'OK'}</span></td><td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(product)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDeleteProduct(product.id)} disabled={deletingProductId === product.id} className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Excluir produto">{deletingProductId === product.id ? <div className="w-4 h-4 border-2 border-red-300 border-t-transparent rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}</button></div></td></tr>))}</tbody>
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Produto</th><th className="px-8 py-6 font-medium">Fornecedor</th><th className="px-8 py-6 font-medium">Categoria</th><th className="px-8 py-6 font-medium">Estoque</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Entrada</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <tbody className="divide-y divide-white/5">{products.map((product) => (<tr key={product.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
+            <td className="px-8 py-6 font-medium text-white">{product.name}</td>
+            <td className="px-8 py-6 text-gray-500">{product.supplier || '-'}</td>
+            <td className="px-8 py-6"><span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 font-bold uppercase">{product.category || 'Geral'}</span></td>
+            <td className="px-8 py-6">{product.stock} un.</td>
+            <td className="px-8 py-6">R$ {product.price}</td>
+            <td className="px-8 py-6 text-gray-500">{product.entry_date ? new Date(product.entry_date).toLocaleDateString('pt-BR') : '-'}</td>
+            <td className="px-8 py-6"><span className={cn("text-[10px] px-2 py-0.5 rounded-full font-bold uppercase", product.stock <= product.min_stock ? "bg-amber-500/10 text-amber-500" : "bg-emerald-500/10 text-emerald-500")}>{product.stock <= product.min_stock ? 'Baixo' : 'OK'}</span></td>
+            <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+              <button onClick={() => setStockEntry({ product, quantity: 1, reason: '', unit_cost: '' })} className="p-2 hover:bg-emerald-500/10 rounded-lg text-gray-400 hover:text-emerald-500 transition-colors" title="Entrada de Estoque"><Plus className="w-4 h-4" /></button>
+              <button onClick={() => setEditing(product)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button>
+              <button onClick={() => handleDeleteProduct(product.id)} disabled={deletingProductId === product.id} className="p-2 hover:bg-red-500/10 rounded-lg text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" title="Excluir produto">{deletingProductId === product.id ? <div className="w-4 h-4 border-2 border-red-300 border-t-transparent rounded-full animate-spin" /> : <Trash2 className="w-4 h-4" />}</button>
+            </div></td>
+          </tr>))}</tbody>
         </table>
       </div>
-      {editing && (
+
+      {/* Stock Entry Modal */}
+      {stockEntry && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-medium mb-2">Entrada de Estoque</h3>
+            <p className="text-sm text-gray-400 mb-6">{stockEntry.product.name} — estoque atual: <strong className="text-white">{stockEntry.product.stock} un.</strong></p>
+            <div className="space-y-4">
+              <div><label className="text-[10px] uppercase text-gray-500 block mb-1">Quantidade a adicionar</label><input type="number" min={1} value={stockEntry.quantity} onChange={e => setStockEntry({...stockEntry, quantity: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
+              <div><label className="text-[10px] uppercase text-gray-500 block mb-1">Custo Unitário (R$) — opcional</label><input type="number" placeholder="0.00" value={stockEntry.unit_cost} onChange={e => setStockEntry({...stockEntry, unit_cost: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
+              <div><label className="text-[10px] uppercase text-gray-500 block mb-1">Motivo / Nota</label><input placeholder="Ex: Compra NF 1234, Fornecedor X" value={stockEntry.reason} onChange={e => setStockEntry({...stockEntry, reason: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
+              <div className="flex gap-4 pt-4"><button onClick={() => setStockEntry(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleStockEntry} disabled={savingEntry} className="flex-1 py-4 rounded-xl bg-emerald-500 text-white font-bold hover:bg-emerald-600 transition-colors disabled:opacity-50">{savingEntry ? 'Salvando...' : `+ ${stockEntry.quantity} unidades`}</button></div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Edit Product Modal */}
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-lg shadow-2xl overflow-y-auto max-h-[90vh]">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Produto' : 'Novo Produto'}</h3>
             <div className="space-y-4">
-              <input placeholder="Nome do Produto" value={editing.name} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <div className="grid grid-cols-2 gap-4"><input type="number" placeholder="Custo (R$)" value={editing.cost} onChange={e => setEditing({...editing, cost: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /><input type="number" placeholder="Preço (R$)" value={editing.price} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
-              <div className="grid grid-cols-2 gap-4"><input type="number" placeholder="Estoque Inicial" value={editing.stock} onChange={e => setEditing({...editing, stock: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /><input type="number" placeholder="Mínimo Alerta" value={editing.min_stock} onChange={e => setEditing({...editing, min_stock: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
+              <input placeholder="Nome do Produto" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <div className="grid grid-cols-2 gap-4">
+                <input type="number" placeholder="Custo (R$)" value={editing.cost || ''} onChange={e => setEditing({...editing, cost: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                <input type="number" placeholder="Preço de Venda (R$)" value={editing.price || ''} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <input type="number" placeholder="Estoque Inicial" value={editing.stock ?? ''} onChange={e => setEditing({...editing, stock: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                <input type="number" placeholder="Mínimo p/ Alerta" value={editing.min_stock ?? ''} onChange={e => setEditing({...editing, min_stock: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="text-[10px] uppercase text-gray-500 block mb-1">Categoria</label>
+                  <select value={editing.category || 'Geral'} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">{CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}</select></div>
+                <div><label className="text-[10px] uppercase text-gray-500 block mb-1">Data de Entrada</label>
+                  <input type="date" value={editing.entry_date || ''} onChange={e => setEditing({...editing, entry_date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" /></div>
+              </div>
+              <input placeholder="Fornecedor" value={editing.supplier || ''} onChange={e => setEditing({...editing, supplier: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
             </div>
           </motion.div>
@@ -1046,13 +1120,30 @@ const CustomerManager = () => {
     else { const err = await res.json(); alert(err.error); }
   };
 
+  const handleDelete = async (id: number) => {
+    if (!confirm('Excluir este cliente? Esta ação não pode ser desfeita.')) return;
+    await fetch(`/api/customers/${id}`, { method: 'DELETE' });
+    fetchCustomers();
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex justify-end"><button onClick={() => setEditing({ name: '', email: '', phone: '', cpf: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Cliente</button></div>
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
-          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Nome</th><th className="px-8 py-6 font-medium">E-mail</th><th className="px-8 py-6 font-medium">Telefone</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
-          <tbody className="divide-y divide-white/5">{customers.map((customer) => (<tr key={customer.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group"><td className="px-8 py-6 font-medium text-white">{customer.name}</td><td className="px-8 py-6">{customer.email}</td><td className="px-8 py-6">{customer.phone || '-'}</td><td className="px-8 py-6 text-right"><button onClick={() => setEditing(customer)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors opacity-100 md:opacity-0 md:group-hover:opacity-100"><Edit2 className="w-4 h-4" /></button></td></tr>))}</tbody>
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Nome</th><th className="px-8 py-6 font-medium">E-mail</th><th className="px-8 py-6 font-medium">Telefone</th><th className="px-8 py-6 font-medium">Desde</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <tbody className="divide-y divide-white/5">{customers.map((customer) => (
+            <tr key={customer.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
+              <td className="px-8 py-6 font-medium text-white">{customer.name}</td>
+              <td className="px-8 py-6">{customer.email}</td>
+              <td className="px-8 py-6">{customer.phone || '-'}</td>
+              <td className="px-8 py-6 text-gray-500">{customer.created_at ? new Date(customer.created_at).toLocaleDateString('pt-BR') : '-'}</td>
+              <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                <button onClick={() => setEditing(customer)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button>
+                <button onClick={() => handleDelete(customer.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>
+              </div></td>
+            </tr>
+          ))}</tbody>
         </table>
       </div>
       {editing && (
@@ -1060,10 +1151,10 @@ const CustomerManager = () => {
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Cliente' : 'Novo Cliente'}</h3>
             <div className="space-y-4">
-              <input placeholder="Nome Completo" value={editing.name} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="E-mail" value={editing.email} onChange={e => setEditing({...editing, email: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="Telefone" value={editing.phone} onChange={e => setEditing({...editing, phone: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="CPF" value={editing.cpf} onChange={e => setEditing({...editing, cpf: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Nome Completo" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="E-mail" value={editing.email || ''} onChange={e => setEditing({...editing, email: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Telefone" value={editing.phone || ''} onChange={e => setEditing({...editing, phone: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="CPF" value={editing.cpf || ''} onChange={e => setEditing({...editing, cpf: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
             </div>
           </motion.div>
@@ -1715,6 +1806,19 @@ const Auth = () => {
 const PlansManager = () => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [editing, setEditing] = useState<Plan | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<string | null>(null);
+
+  const handleStripeSync = async () => {
+    setSyncing(true); setSyncResult(null);
+    try {
+      const res = await fetch('/api/stripe/sync-plans');
+      const data = await res.json();
+      if (res.ok) { setSyncResult(`${data.synced} plano(s) sincronizado(s) da Stripe.`); fetchPlans(); }
+      else { setSyncResult(`Erro: ${data.error}`); }
+    } catch { setSyncResult('Falha na conexão com o servidor.'); }
+    setSyncing(false);
+  };
 
   const createEmptyPlan = (): Plan => ({
     id: '',
@@ -1786,13 +1890,26 @@ const PlansManager = () => {
           <h3 className="text-xl font-medium">Cadastro de Planos</h3>
           <p className="text-sm text-gray-500">Gerencie planos e benefícios da assinatura.</p>
         </div>
-        <button
-          onClick={() => setEditing(createEmptyPlan())}
-          className="px-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors inline-flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" /> Novo Plano
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={handleStripeSync}
+            disabled={syncing}
+            className="px-5 py-3 rounded-xl bg-violet-600/20 text-violet-300 border border-violet-500/30 font-bold hover:bg-violet-600/30 transition-colors inline-flex items-center gap-2 disabled:opacity-50"
+          >
+            {syncing ? <div className="w-4 h-4 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {syncing ? 'Sincronizando...' : 'Sincronizar Stripe'}
+          </button>
+          <button
+            onClick={() => setEditing(createEmptyPlan())}
+            className="px-6 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors inline-flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" /> Novo Plano
+          </button>
+        </div>
       </div>
+      {syncResult && (
+        <div className={cn('p-4 rounded-xl border text-sm', syncResult.startsWith('Erro') || syncResult.startsWith('Falha') ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400')}>{syncResult}</div>
+      )}
 
       {plans.length === 0 ? (
         <div className="border border-white/10 bg-zinc-900/40 rounded-[2.5rem] p-10 text-center">
