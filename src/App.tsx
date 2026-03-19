@@ -393,11 +393,11 @@ const AdminDashboard = () => {
     { id: 'overview', label: 'Visão Geral', icon: LayoutDashboard },
     { id: 'pos', label: 'Caixa (PDV)', icon: CreditCard },
     { id: 'appointments', label: 'Agendamentos', icon: Calendar },
-    { id: 'barbers', label: 'Barbeiros', icon: Scissors },
-    { id: 'inventory', label: 'Estoque', icon: Package },
+    { id: 'barbers', label: 'Gestão de Equipe', icon: Scissors },
+    { id: 'inventory', label: 'Cadastro de Produtos', icon: Package },
     { id: 'customers', label: 'Clientes', icon: Users },
     { id: 'reports', label: 'Relatórios', icon: FileText },
-    { id: 'plans', label: 'Planos', icon: Crown },
+    { id: 'plans', label: 'Cadastro de Planos', icon: Crown },
     { id: 'settings', label: 'Configurações', icon: Settings },
   ];
 
@@ -464,7 +464,9 @@ const AdminDashboard = () => {
                     <div className="space-y-4">
                       <QuickAction label="Novo Agendamento" icon={Calendar} onClick={() => setActiveView('appointments')} />
                       <QuickAction label="Registrar Venda" icon={ShoppingBag} onClick={() => setActiveView('pos')} />
-                      <QuickAction label="Novo Barbeiro" icon={Plus} onClick={() => setActiveView('barbers')} />
+                      <QuickAction label="Gestão de Equipe" icon={Scissors} onClick={() => setActiveView('barbers')} />
+                      <QuickAction label="Cadastro de Produtos" icon={Package} onClick={() => setActiveView('inventory')} />
+                      <QuickAction label="Cadastro de Planos" icon={Crown} onClick={() => setActiveView('plans')} />
                       <QuickAction label="Ver Clientes" icon={Users} onClick={() => setActiveView('customers')} />
                     </div>
                   </div>
@@ -1787,8 +1789,6 @@ const SettingsView = () => {
   );
 };
 
-const ADMIN_UIDS = ['d0f08ff6-6871-4c30-9d9e-a2812b8f4e48', '4f0e6229-0734-4f0e-a1c9-43dceecc777a'];
-
 export default function App() {
   const [activeTab, setActiveTab] = useState('landing');
   const [session, setSession] = useState<Session | null>(null);
@@ -1809,7 +1809,14 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const isAdmin = session?.user?.id && ADMIN_UIDS.includes(session.user.id);
+  const roleFromMetadata = String(
+    session?.user?.app_metadata?.role ||
+    session?.user?.user_metadata?.role ||
+    ''
+  ).toLowerCase();
+  const isAdmin = Boolean(session) && (
+    !roleFromMetadata || ['admin', 'owner', 'superadmin'].includes(roleFromMetadata)
+  );
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-white selection:text-black">
@@ -1831,8 +1838,8 @@ export default function App() {
                 <Lock className="w-12 h-12 text-red-500 mb-4" />
                 <h2 className="text-2xl font-light mb-2">Acesso Negado</h2>
                 <p className="text-gray-500 max-w-md">
-                  Sua conta ({session.user.email}) não possui permissões de administrador. 
-                  Apenas o proprietário do sistema pode acessar o Dashboard.
+                  Sua conta ({session.user.email}) não possui role administrativa no Supabase.
+                  Defina app_metadata.role como admin/owner/superadmin para liberar o Dashboard.
                 </p>
                 <button 
                   onClick={() => supabase.auth.signOut()}
