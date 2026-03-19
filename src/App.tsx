@@ -471,7 +471,6 @@ const AdminDashboard = () => {
     { id: 'financial', label: 'Financeiro', icon: PieChart },
     { id: 'reports', label: 'Relatórios', icon: FileText },
     { id: 'plans', label: 'Cadastro de Planos', icon: Crown },
-    { id: 'settings', label: 'Configurações', icon: Settings },
   ];
 
   if (!stats) return <div className="pt-32 text-center text-white">Carregando painel...</div>;
@@ -479,18 +478,24 @@ const AdminDashboard = () => {
   return (
     <div className="flex min-h-screen bg-[#050505] text-white pt-16">
       <aside className={cn("fixed left-0 top-16 bottom-0 z-40 bg-black border-r border-white/5 transition-all duration-300", sidebarOpen ? "w-64" : "w-20")}>
-        <div className="flex flex-col h-full p-4">
-          <div className="space-y-2 flex-1 overflow-y-auto min-h-0 pr-1">
+        <div className="flex flex-col h-full p-4 gap-2">
+          <div className="space-y-1 flex-1 overflow-y-auto min-h-0 pr-1">
             {menuItems.map((item) => (
-              <button key={item.id} onClick={() => setActiveView(item.id as any)} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", activeView === item.id ? "bg-white text-black shadow-[0_10px_20px_rgba(255,255,255,0.1)]" : "text-gray-500 hover:text-white hover:bg-white/5")}>
+              <button key={item.id} onClick={() => setActiveView(item.id as any)} className={cn("w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all group", activeView === item.id ? "bg-white text-black shadow-[0_10px_20px_rgba(255,255,255,0.1)]" : "text-gray-500 hover:text-white hover:bg-white/5")}>
                 <item.icon className={cn("w-5 h-5 shrink-0", activeView === item.id ? "text-black" : "group-hover:scale-110 transition-transform")} />
                 {sidebarOpen && <span className="font-medium text-sm">{item.label}</span>}
               </button>
             ))}
           </div>
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-3 rounded-xl bg-white/5 text-gray-500 hover:text-white transition-colors flex justify-center">
-            {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-          </button>
+          <div className="border-t border-white/5 pt-2 space-y-1">
+            <button onClick={() => setActiveView('settings')} className={cn("w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all group", activeView === 'settings' ? "bg-white text-black shadow-[0_10px_20px_rgba(255,255,255,0.1)]" : "text-gray-500 hover:text-white hover:bg-white/5")}>
+              <Settings className={cn("w-5 h-5 shrink-0", activeView === 'settings' ? "text-black" : "group-hover:scale-110 transition-transform")} />
+              {sidebarOpen && <span className="font-medium text-sm">Configurações</span>}
+            </button>
+            <button onClick={() => setSidebarOpen(!sidebarOpen)} className="w-full p-2.5 rounded-xl bg-white/5 text-gray-500 hover:text-white transition-colors flex justify-center">
+              {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
+          </div>
         </div>
       </aside>
 
