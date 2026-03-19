@@ -599,6 +599,7 @@ const AppointmentsManager = () => {
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [editing, setEditing] = useState<Partial<Appointment> | null>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [calendarStart, setCalendarStart] = useState(() => {
     const now = new Date();
     const mondayOffset = (now.getDay() + 6) % 7;
@@ -695,6 +696,24 @@ const AppointmentsManager = () => {
       .sort((a, b) => new Date(a.appointment_date).getTime() - new Date(b.appointment_date).getTime());
   });
 
+  const openNewAppointmentForDay = (day: Date) => {
+    const slot = new Date(day);
+    slot.setHours(9, 0, 0, 0);
+    setEditing({
+      customer_id: 0,
+      barber_id: 0,
+      service_type: '',
+      appointment_date: slot.toISOString(),
+      status: 'pending'
+    });
+  };
+
+  const selectedDayAppointments = selectedDay
+    ? appointments
+        .filter((apt) => localDateKey(new Date(apt.appointment_date)) === localDateKey(selectedDay))
+        .sort((a, b) => new Date(a.appointment_date).getTime() - new Date(b.appointment_date).getTime())
+    : [];
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -749,10 +768,35 @@ const AppointmentsManager = () => {
             const dayAppointments = appointmentsByDay[index];
             const isToday = day.toDateString() === new Date().toDateString();
             return (
-              <div key={day.toISOString()} className={cn('rounded-2xl border p-3 min-h-60', isToday ? 'border-white/30 bg-white/[0.07]' : 'border-white/10 bg-black/30')}>
-                <div className="mb-3">
-                  <p className="text-[10px] uppercase tracking-widest text-gray-500">{day.toLocaleDateString('pt-BR', { weekday: 'short' })}</p>
-                  <p className="text-sm text-white font-bold">{day.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</p>
+              <div
+                key={day.toISOString()}
+                onClick={(e) => {
+                  if (e.target === e.currentTarget) openNewAppointmentForDay(day);
+                }}
+                className={cn('rounded-2xl border p-3 min-h-60 relative cursor-pointer', isToday ? 'border-white/30 bg-white/[0.07]' : 'border-white/10 bg-black/30')}
+              >
+                <div className="mb-3 flex items-start justify-between gap-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedDay(day);
+                    }}
+                    className="text-left hover:opacity-80 transition-opacity"
+                    title="Abrir agenda diária"
+                  >
+                    <p className="text-[10px] uppercase tracking-widest text-gray-500">{day.toLocaleDateString('pt-BR', { weekday: 'short' })}</p>
+                    <p className="text-sm text-white font-bold">{day.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</p>
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openNewAppointmentForDay(day);
+                    }}
+                    className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+                    title="Novo agendamento neste dia"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
                 </div>
 
                 <div className="space-y-2">
@@ -774,7 +818,15 @@ const AppointmentsManager = () => {
                     </button>
                   ))}
                   {dayAppointments.length === 0 && (
-                    <p className="text-[11px] text-gray-600 text-center py-4">Sem horários</p>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openNewAppointmentForDay(day);
+                      }}
+                      className="w-full text-[11px] text-gray-500 hover:text-white border border-dashed border-white/10 rounded-xl py-4 transition-colors"
+                    >
+                      Sem horários. Clique para criar.
+                    </button>
                   )}
                 </div>
               </div>
@@ -880,6 +932,86 @@ const AppointmentsManager = () => {
                 <button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button>
                 <button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button>
               </div>
+              {editing.id && (
+                <button
+                  onClick={async () => {
+                    await handleDelete(Number(editing.id));
+                    setEditing(null);
+                  }}
+                  className="w-full py-3 rounded-xl bg-red-500/20 border border-red-500/40 text-red-300 font-bold hover:bg-red-500/30 transition-colors"
+                >
+                  Deletar/Cancelar Agendamento
+                </button>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {selectedDay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-2xl shadow-2xl max-h-[85vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-medium">Agenda do Dia</h3>
+                <p className="text-sm text-gray-400">
+                  {selectedDay.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    openNewAppointmentForDay(selectedDay);
+                    setSelectedDay(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-white text-black text-sm font-bold hover:bg-gray-200 transition-colors"
+                >
+                  <span className="inline-flex items-center gap-2"><Plus className="w-4 h-4" />Novo</span>
+                </button>
+                <button onClick={() => setSelectedDay(null)} className="px-4 py-2 rounded-xl bg-white/10 text-sm font-bold hover:bg-white/20 transition-colors">Fechar</button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {selectedDayAppointments.map((apt) => (
+                <button
+                  key={apt.id}
+                  onClick={() => {
+                    setSelectedAppointment(apt);
+                    setSelectedDay(null);
+                  }}
+                  className="w-full text-left p-4 rounded-xl border border-white/10 bg-black/30 hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-sm font-bold text-white">{new Date(apt.appointment_date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
+                    <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase',
+                      apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' :
+                      apt.status === 'cancelled' ? 'bg-red-500/10 text-red-500' :
+                      apt.status === 'confirmed' ? 'bg-blue-500/10 text-blue-400' :
+                      'bg-amber-500/10 text-amber-400'
+                    )}>
+                      {apt.status === 'completed' ? 'Concluído' : apt.status === 'cancelled' ? 'Cancelado' : apt.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-200">{apt.customer_name || 'Cliente sem nome'}</p>
+                  <p className="text-xs text-gray-500">{apt.service_type} • {apt.barber_name}</p>
+                </button>
+              ))}
+
+              {selectedDayAppointments.length === 0 && (
+                <div className="text-center py-10 border border-dashed border-white/10 rounded-xl">
+                  <p className="text-gray-500 mb-3">Nenhum agendamento neste dia.</p>
+                  <button
+                    onClick={() => {
+                      openNewAppointmentForDay(selectedDay);
+                      setSelectedDay(null);
+                    }}
+                    className="px-5 py-2 rounded-xl bg-white text-black text-sm font-bold hover:bg-gray-200 transition-colors"
+                  >
+                    Criar Agendamento
+                  </button>
+                </div>
+              )}
             </div>
           </motion.div>
         </div>
