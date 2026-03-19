@@ -598,6 +598,7 @@ const AppointmentsManager = () => {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [editing, setEditing] = useState<Partial<Appointment> | null>(null);
+  const [blocking, setBlocking] = useState<{ barber_id: string; date: string; time: string } | null>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [calendarStart, setCalendarStart] = useState(() => {
@@ -660,6 +661,37 @@ const AppointmentsManager = () => {
     fetchData();
   };
 
+  const handleUnblock = async (id: number) => {
+    if (!confirm('Deseja desbloquear este horário?')) return;
+    await fetch(`/api/appointments/${id}`, { method: 'DELETE' });
+    setSelectedAppointment(null);
+    fetchData();
+  };
+
+  const handleCreateBlock = async () => {
+    if (!blocking?.barber_id || !blocking.date || !blocking.time) {
+      alert('Preencha barbeiro, data e horário para bloquear.');
+      return;
+    }
+
+    const appointment_date = new Date(`${blocking.date}T${blocking.time}:00`).toISOString();
+
+    await fetch('/api/appointments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customer_id: null,
+        barber_id: Number(blocking.barber_id),
+        service_type: 'BLOQUEADO',
+        appointment_date,
+        status: 'confirmed'
+      })
+    });
+
+    setBlocking(null);
+    fetchData();
+  };
+
   const moveAppointment = async (apt: Appointment, deltaMinutes: number) => {
     const moved = new Date(new Date(apt.appointment_date).getTime() + deltaMinutes * 60000);
     await updateAppointment(apt.id, { appointment_date: moved.toISOString() });
@@ -714,6 +746,11 @@ const AppointmentsManager = () => {
         .sort((a, b) => new Date(a.appointment_date).getTime() - new Date(b.appointment_date).getTime())
     : [];
 
+  const isBlockedAppointment = (apt: Appointment) => {
+    const service = (apt.service_type || '').toLowerCase();
+    return !apt.customer_id && (service.includes('bloque') || service.includes('indispon'));
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
@@ -721,9 +758,14 @@ const AppointmentsManager = () => {
           <h3 className="text-xl font-medium mb-1">Calendário de Agendamentos</h3>
           <p className="text-sm text-gray-500">Visualize a semana, clique em um horário para mover, editar ou cancelar.</p>
         </div>
-        <button onClick={() => setEditing({ customer_id: 0, barber_id: 0, service_type: '', appointment_date: new Date().toISOString().slice(0, 16), status: 'pending' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all">
-          <Plus className="w-4 h-4" /> Novo Agendamento
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <button onClick={() => setBlocking({ barber_id: '', date: localDateKey(new Date()), time: '12:00' })} className="bg-white/10 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-white/20 transition-all border border-white/15">
+            <Lock className="w-4 h-4" /> Bloquear Horário
+          </button>
+          <button onClick={() => setEditing({ customer_id: 0, barber_id: 0, service_type: '', appointment_date: new Date().toISOString().slice(0, 16), status: 'pending' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all">
+            <Plus className="w-4 h-4" /> Novo Agendamento
+          </button>
+        </div>
       </div>
 
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-6">
@@ -803,18 +845,35 @@ const AppointmentsManager = () => {
                   {dayAppointments.map((apt) => (
                     <button
                       key={apt.id}
-                      onClick={() => setSelectedAppointment(apt)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAppointment(apt);
+                      }}
                       className={cn(
-                        'w-full text-left p-2 rounded-xl border transition-colors',
-                        apt.status === 'cancelled' ? 'border-red-500/30 bg-red-500/10' :
-                        apt.status === 'completed' ? 'border-emerald-500/30 bg-emerald-500/10' :
-                        apt.status === 'confirmed' ? 'border-blue-500/30 bg-blue-500/10' :
-                        'border-amber-500/30 bg-amber-500/10'
+                        'w-full text-left p-2 rounded-xl border transition-colors relative',
+                        isBlockedAppointment(apt)
+                          ? 'border-slate-400/40 bg-slate-600/20'
+                          : apt.status === 'cancelled' ? 'border-red-500/30 bg-red-500/10' :
+                          apt.status === 'completed' ? 'border-emerald-500/30 bg-emerald-500/10' :
+                          apt.status === 'confirmed' ? 'border-blue-500/30 bg-blue-500/10' :
+                          'border-amber-500/30 bg-amber-500/10'
                       )}
                     >
                       <div className="text-xs font-bold text-white">{new Date(apt.appointment_date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
-                      <div className="text-xs text-gray-200 truncate">{apt.customer_name || 'Cliente'}</div>
-                      <div className="text-[10px] text-gray-400 truncate">{apt.service_type}</div>
+                      <div className="text-xs text-gray-200 truncate">{isBlockedAppointment(apt) ? 'Horário Bloqueado' : (apt.customer_name || 'Cliente')}</div>
+                      <div className="text-[10px] text-gray-400 truncate">{isBlockedAppointment(apt) ? 'Indisponível para agendamento' : apt.service_type}</div>
+                      {isBlockedAppointment(apt) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await handleUnblock(apt.id);
+                          }}
+                          className="absolute top-2 right-2 w-6 h-6 rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 flex items-center justify-center"
+                          title="Desbloquear horário"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </button>
                   ))}
                   {dayAppointments.length === 0 && (
@@ -851,9 +910,9 @@ const AppointmentsManager = () => {
             {appointments.map((apt) => (
               <tr key={apt.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
                 <td className="px-8 py-6 font-medium text-white">{new Date(apt.appointment_date).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</td>
-                <td className="px-8 py-6">{apt.customer_name}</td>
+                <td className="px-8 py-6">{isBlockedAppointment(apt) ? 'BLOQUEADO' : apt.customer_name}</td>
                 <td className="px-8 py-6">{apt.barber_name}</td>
-                <td className="px-8 py-6">{apt.service_type}</td>
+                <td className="px-8 py-6">{isBlockedAppointment(apt) ? 'Horário indisponível' : apt.service_type}</td>
                 <td className="px-8 py-6">
                   <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase',
                     apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' :
@@ -866,9 +925,9 @@ const AppointmentsManager = () => {
                 </td>
                 <td className="px-8 py-6 text-right">
                   <div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => sendWhatsAppReminder(apt)} className="p-2 hover:bg-emerald-500/10 rounded-lg text-gray-400 hover:text-emerald-500 transition-colors" title="Lembrete WhatsApp"><MessageCircle className="w-4 h-4" /></button>
+                    {!isBlockedAppointment(apt) && <button onClick={() => sendWhatsAppReminder(apt)} className="p-2 hover:bg-emerald-500/10 rounded-lg text-gray-400 hover:text-emerald-500 transition-colors" title="Lembrete WhatsApp"><MessageCircle className="w-4 h-4" /></button>}
                     <button onClick={() => setEditing(apt)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors" title="Editar"><Edit2 className="w-4 h-4" /></button>
-                    <button onClick={() => handleDelete(apt.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors" title="Excluir"><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={() => isBlockedAppointment(apt) ? handleUnblock(apt.id) : handleDelete(apt.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors" title={isBlockedAppointment(apt) ? 'Desbloquear' : 'Excluir'}><Trash2 className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
@@ -885,20 +944,22 @@ const AppointmentsManager = () => {
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-lg shadow-2xl">
             <h3 className="text-xl font-medium mb-6">Detalhes do Agendamento</h3>
             <div className="space-y-3 text-sm mb-7">
-              <div className="flex justify-between"><span className="text-gray-500">Cliente</span><span className="text-white">{selectedAppointment.customer_name}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Cliente</span><span className="text-white">{isBlockedAppointment(selectedAppointment) ? 'BLOQUEADO' : selectedAppointment.customer_name}</span></div>
               <div className="flex justify-between"><span className="text-gray-500">Barbeiro</span><span className="text-white">{selectedAppointment.barber_name}</span></div>
-              <div className="flex justify-between"><span className="text-gray-500">Serviço</span><span className="text-white">{selectedAppointment.service_type}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Serviço</span><span className="text-white">{isBlockedAppointment(selectedAppointment) ? 'Horário bloqueado' : selectedAppointment.service_type}</span></div>
               <div className="flex justify-between"><span className="text-gray-500">Data/Hora</span><span className="text-white">{new Date(selectedAppointment.appointment_date).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</span></div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <button onClick={() => moveAppointment(selectedAppointment, -30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Antecipar 30 min</button>
-              <button onClick={() => moveAppointment(selectedAppointment, 30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Adiar 30 min</button>
-            </div>
+            {!isBlockedAppointment(selectedAppointment) && (
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <button onClick={() => moveAppointment(selectedAppointment, -30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Antecipar 30 min</button>
+                <button onClick={() => moveAppointment(selectedAppointment, 30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Adiar 30 min</button>
+              </div>
+            )}
 
             <div className="flex gap-3">
               <button onClick={() => { setEditing(selectedAppointment); setSelectedAppointment(null); }} className="flex-1 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors">Editar</button>
-              <button onClick={() => updateAppointment(selectedAppointment.id, { status: 'cancelled' })} className="flex-1 py-3 rounded-xl bg-red-500/90 text-white font-bold hover:bg-red-500 transition-colors">Cancelar Agendamento</button>
+              <button onClick={() => isBlockedAppointment(selectedAppointment) ? handleUnblock(selectedAppointment.id) : updateAppointment(selectedAppointment.id, { status: 'cancelled' })} className="flex-1 py-3 rounded-xl bg-red-500/90 text-white font-bold hover:bg-red-500 transition-colors">{isBlockedAppointment(selectedAppointment) ? 'Desbloquear' : 'Cancelar Agendamento'}</button>
               <button onClick={() => setSelectedAppointment(null)} className="px-4 py-3 rounded-xl bg-white/10 font-bold hover:bg-white/20 transition-colors">Fechar</button>
             </div>
           </motion.div>
@@ -910,15 +971,17 @@ const AppointmentsManager = () => {
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Agendamento' : 'Novo Agendamento'}</h3>
             <div className="space-y-4">
+              {!isBlockedAppointment(editing as Appointment) && (
               <select value={editing.customer_id || ''} onChange={e => setEditing({ ...editing, customer_id: Number(e.target.value) })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                 <option value="">Selecione o Cliente</option>
                 {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+              )}
               <select value={editing.barber_id || ''} onChange={e => setEditing({ ...editing, barber_id: Number(e.target.value) })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                 <option value="">Selecione o Barbeiro</option>
                 {barbers.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
-              <input placeholder="Tipo de Serviço (ex: Corte e Barba)" value={editing.service_type || ''} onChange={e => setEditing({ ...editing, service_type: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder={isBlockedAppointment(editing as Appointment) ? 'Descrição do bloqueio' : 'Tipo de Serviço (ex: Corte e Barba)'} value={editing.service_type || ''} onChange={e => setEditing({ ...editing, service_type: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <input type="datetime-local" value={formatInputDateTime(editing.appointment_date)} onChange={e => setEditing({ ...editing, appointment_date: new Date(e.target.value).toISOString() })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               {editing.id && (
                 <select value={editing.status || 'pending'} onChange={e => setEditing({ ...editing, status: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
@@ -935,14 +998,37 @@ const AppointmentsManager = () => {
               {editing.id && (
                 <button
                   onClick={async () => {
-                    await handleDelete(Number(editing.id));
+                    if (isBlockedAppointment(editing as Appointment)) await handleUnblock(Number(editing.id));
+                    else await handleDelete(Number(editing.id));
                     setEditing(null);
                   }}
                   className="w-full py-3 rounded-xl bg-red-500/20 border border-red-500/40 text-red-300 font-bold hover:bg-red-500/30 transition-colors"
                 >
-                  Deletar/Cancelar Agendamento
+                  {isBlockedAppointment(editing as Appointment) ? 'Desbloquear Horário' : 'Deletar/Cancelar Agendamento'}
                 </button>
               )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {blocking && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-medium mb-6 flex items-center gap-2"><Lock className="w-5 h-5" /> Bloquear Horário</h3>
+            <div className="space-y-4">
+              <select value={blocking.barber_id} onChange={(e) => setBlocking({ ...blocking, barber_id: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                <option value="">Selecione o Barbeiro</option>
+                {barbers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+              <div className="grid grid-cols-2 gap-4">
+                <input type="date" value={blocking.date} onChange={(e) => setBlocking({ ...blocking, date: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                <input type="time" value={blocking.time} onChange={(e) => setBlocking({ ...blocking, time: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <div className="flex gap-4 pt-2">
+                <button onClick={() => setBlocking(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button>
+                <button onClick={handleCreateBlock} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar Bloqueio</button>
+              </div>
             </div>
           </motion.div>
         </div>
@@ -985,16 +1071,17 @@ const AppointmentsManager = () => {
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-sm font-bold text-white">{new Date(apt.appointment_date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</p>
                     <span className={cn('text-[10px] px-2 py-0.5 rounded-full font-bold uppercase',
+                      isBlockedAppointment(apt) ? 'bg-slate-500/20 text-slate-300' :
                       apt.status === 'completed' ? 'bg-emerald-500/10 text-emerald-500' :
                       apt.status === 'cancelled' ? 'bg-red-500/10 text-red-500' :
                       apt.status === 'confirmed' ? 'bg-blue-500/10 text-blue-400' :
                       'bg-amber-500/10 text-amber-400'
                     )}>
-                      {apt.status === 'completed' ? 'Concluído' : apt.status === 'cancelled' ? 'Cancelado' : apt.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
+                      {isBlockedAppointment(apt) ? 'Bloqueado' : apt.status === 'completed' ? 'Concluído' : apt.status === 'cancelled' ? 'Cancelado' : apt.status === 'confirmed' ? 'Confirmado' : 'Pendente'}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-200">{apt.customer_name || 'Cliente sem nome'}</p>
-                  <p className="text-xs text-gray-500">{apt.service_type} • {apt.barber_name}</p>
+                  <p className="text-sm text-gray-200">{isBlockedAppointment(apt) ? 'Horário bloqueado' : (apt.customer_name || 'Cliente sem nome')}</p>
+                  <p className="text-xs text-gray-500">{isBlockedAppointment(apt) ? `Indisponível • ${apt.barber_name}` : `${apt.service_type} • ${apt.barber_name}`}</p>
                 </button>
               ))}
 

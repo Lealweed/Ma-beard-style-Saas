@@ -353,12 +353,19 @@ async function startServer() {
           if (fullApt) {
             const start = new Date(fullApt.appointment_date);
             const end = new Date(start.getTime() + 60 * 60 * 1000);
+            const isBlocked = !fullApt.customer_id && String(fullApt.service_type || '').toLowerCase().includes('bloque');
+            const summary = isBlocked
+              ? `Horário bloqueado - ${fullApt.barbers?.name || 'Barbeiro'}`
+              : `Corte: ${fullApt.customers?.name || 'Cliente'} com ${fullApt.barbers?.name || 'Barbeiro'}`;
+            const description = isBlocked
+              ? 'Bloqueio manual de agenda (almoço/compromisso pessoal).'
+              : `Serviço: ${fullApt.service_type}`;
             
             const event = await calendar.events.insert({
               calendarId: "primary",
               requestBody: {
-                summary: `Corte: ${fullApt.customers?.name} com ${fullApt.barbers?.name}`,
-                description: `Serviço: ${fullApt.service_type}`,
+                summary,
+                description,
                 start: { dateTime: start.toISOString() },
                 end: { dateTime: end.toISOString() },
               },
@@ -418,6 +425,13 @@ async function startServer() {
             if (updatedApt) {
               const start = new Date(updatedApt.appointment_date);
               const end = new Date(start.getTime() + 60 * 60 * 1000);
+              const isBlocked = !updatedApt.customer_id && String(updatedApt.service_type || '').toLowerCase().includes('bloque');
+              const summary = isBlocked
+                ? `Horário bloqueado - ${updatedApt.barbers?.name || 'Barbeiro'}`
+                : `Corte: ${updatedApt.customers?.name || 'Cliente'} com ${updatedApt.barber_name || updatedApt.barbers?.name || 'Barbeiro'}`;
+              const description = isBlocked
+                ? 'Bloqueio manual de agenda (almoço/compromisso pessoal).'
+                : `Serviço: ${updatedApt.service_type}`;
 
               if (updatedApt.status === 'cancelled') {
                 try {
@@ -431,8 +445,8 @@ async function startServer() {
                   calendarId: "primary",
                   eventId: oldApt.google_event_id,
                   requestBody: {
-                    summary: `Corte: ${updatedApt.customers?.name} com ${updatedApt.barber_name || updatedApt.barbers?.name}`,
-                    description: `Serviço: ${updatedApt.service_type}`,
+                    summary,
+                    description,
                     start: { dateTime: start.toISOString() },
                     end: { dateTime: end.toISOString() },
                   },
