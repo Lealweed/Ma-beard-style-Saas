@@ -1455,7 +1455,7 @@ const FinancialReport = () => {
   );
 };
 
-const PublicBooking = () => {
+const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
   const [step, setStep] = useState(1);
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [barbers, setBarbers] = useState<{id: number; name: string; specialty: string; photo_url?: string}[]>([]);
@@ -1467,6 +1467,8 @@ const PublicBooking = () => {
   const [clientData, setClientData] = useState({ name: '', phone: '', email: '' });
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [checkingSubscription, setCheckingSubscription] = useState(false);
+  const [subscriptionBlocked, setSubscriptionBlocked] = useState(false);
 
   useEffect(() => {
     fetch('/api/public/services').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
@@ -1585,10 +1587,41 @@ const PublicBooking = () => {
 
           {step === 4 && (
             <div className="max-w-md mx-auto space-y-4">
-              <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => setClientData({...clientData, name: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => setClientData({...clientData, phone: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <input type="email" placeholder="E-mail (opcional)" value={clientData.email} onChange={e => setClientData({...clientData, email: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <button onClick={() => { if (clientData.name && clientData.phone) setStep(5); else alert('Preencha nome e WhatsApp.'); }} className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all">Continuar</button>
+              <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => { setClientData({...clientData, name: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => { setClientData({...clientData, phone: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="email" placeholder="E-mail (obrigatório para verificar assinatura)" value={clientData.email} onChange={e => { setClientData({...clientData, email: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
+
+              {subscriptionBlocked && (
+                <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="p-5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-center space-y-3">
+                  <Crown className="w-8 h-8 text-amber-400 mx-auto" />
+                  <p className="text-amber-300 font-medium text-sm">Assinatura não encontrada</p>
+                  <p className="text-amber-200/70 text-xs leading-relaxed">O agendamento online é exclusivo para assinantes. Escolha um plano para liberar este benefício.</p>
+                  <button onClick={() => setActiveTab('landing')} className="w-full py-3 rounded-xl bg-amber-500 text-black font-bold text-sm hover:bg-amber-400 transition-colors">Ver Planos de Assinatura</button>
+                </motion.div>
+              )}
+
+              <button
+                onClick={async () => {
+                  if (!clientData.name || !clientData.phone) { alert('Preencha nome e WhatsApp.'); return; }
+                  if (!clientData.email) { setSubscriptionBlocked(true); return; }
+                  setCheckingSubscription(true);
+                  setSubscriptionBlocked(false);
+                  try {
+                    const res = await fetch('/api/subscriptions');
+                    const subs = await res.json();
+                    const hasActive = Array.isArray(subs) && subs.some(
+                      (s: any) => s.customer_email?.toLowerCase() === clientData.email.toLowerCase() && s.status === 'active'
+                    );
+                    if (hasActive) { setStep(5); }
+                    else { setSubscriptionBlocked(true); }
+                  } catch { setStep(5); } // se API falhar, permite continuar
+                  finally { setCheckingSubscription(false); }
+                }}
+                disabled={checkingSubscription}
+                className="w-full py-4 bg-white text-black rounded-xl font-bold hover:bg-gray-200 transition-all disabled:opacity-50"
+              >
+                {checkingSubscription ? 'Verificando assinatura...' : 'Continuar'}
+              </button>
             </div>
           )}
 
@@ -2425,7 +2458,7 @@ export default function App() {
           {activeTab === 'landing' ? (
             <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'booking' ? (
-            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking /></motion.div>
+            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking setActiveTab={setActiveTab} /></motion.div>
           ) : (
             !session ? (
               <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><Auth /></motion.div>
