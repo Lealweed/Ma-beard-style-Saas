@@ -598,11 +598,37 @@ const AppointmentsManager = () => {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [editing, setEditing] = useState<Partial<Appointment> | null>(null);
+  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [calendarStart, setCalendarStart] = useState(() => {
+    const now = new Date();
+    const mondayOffset = (now.getDay() + 6) % 7;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+  });
 
-  const fetchData = () => {
-    fetch('/api/appointments').then(res => res.json()).then(setAppointments);
-    fetch('/api/customers').then(res => res.json()).then(setCustomers);
-    fetch('/api/barbers').then(res => res.json()).then(setBarbers);
+  const formatInputDateTime = (iso?: string) => {
+    if (!iso) return '';
+    const dt = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+  };
+
+  const fetchData = async () => {
+    const [aptsRes, customersRes, barbersRes] = await Promise.all([
+      fetch('/api/appointments'),
+      fetch('/api/customers'),
+      fetch('/api/barbers')
+    ]);
+    const [aptsData, customersData, barbersData] = await Promise.all([
+      aptsRes.json(),
+      customersRes.json(),
+      barbersRes.json()
+    ]);
+    setAppointments(Array.isArray(aptsData) ? aptsData : []);
+    setCustomers(Array.isArray(customersData) ? customersData : []);
+    setBarbers(Array.isArray(barbersData) ? barbersData : []);
   };
 
   useEffect(() => { fetchData(); }, []);
@@ -612,13 +638,30 @@ const AppointmentsManager = () => {
     const url = editing?.id ? `/api/appointments/${editing.id}` : '/api/appointments';
     await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
     setEditing(null);
+    setSelectedAppointment(null);
+    fetchData();
+  };
+
+  const updateAppointment = async (id: number, payload: Partial<Appointment>) => {
+    await fetch(`/api/appointments/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    setSelectedAppointment(null);
     fetchData();
   };
 
   const handleDelete = async (id: number) => {
     if (!confirm('Deseja realmente cancelar este agendamento?')) return;
     await fetch(`/api/appointments/${id}`, { method: 'DELETE' });
+    setSelectedAppointment(null);
     fetchData();
+  };
+
+  const moveAppointment = async (apt: Appointment, deltaMinutes: number) => {
+    const moved = new Date(new Date(apt.appointment_date).getTime() + deltaMinutes * 60000);
+    await updateAppointment(apt.id, { appointment_date: moved.toISOString() });
   };
 
   const sendWhatsAppReminder = (apt: Appointment) => {
@@ -632,12 +675,112 @@ const AppointmentsManager = () => {
     window.open(url, '_blank');
   };
 
+  const weekDays = Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(calendarStart);
+    day.setDate(calendarStart.getDate() + index);
+    return day;
+  });
+
+  const localDateKey = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const appointmentsByDay = weekDays.map((day) => {
+    const key = localDateKey(day);
+    return appointments
+      .filter((apt) => localDateKey(new Date(apt.appointment_date)) === key)
+      .sort((a, b) => new Date(a.appointment_date).getTime() - new Date(b.appointment_date).getTime());
+  });
+
   return (
     <div className="space-y-8">
-      <div className="flex justify-end">
-        <button onClick={() => setEditing({ customer_id: 0, barber_id: 0, service_type: '', appointment_date: new Date().toISOString().slice(0, 16) })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-medium mb-1">Calendário de Agendamentos</h3>
+          <p className="text-sm text-gray-500">Visualize a semana, clique em um horário para mover, editar ou cancelar.</p>
+        </div>
+        <button onClick={() => setEditing({ customer_id: 0, barber_id: 0, service_type: '', appointment_date: new Date().toISOString().slice(0, 16), status: 'pending' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all">
           <Plus className="w-4 h-4" /> Novo Agendamento
         </button>
+      </div>
+
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-6">
+        <div className="flex items-center justify-between mb-5">
+          <button
+            onClick={() => setCalendarStart((prev) => {
+              const next = new Date(prev);
+              next.setDate(prev.getDate() - 7);
+              return next;
+            })}
+            className="px-4 py-2 rounded-xl bg-white/10 text-sm font-bold hover:bg-white/20 transition-colors"
+          >
+            Semana Anterior
+          </button>
+          <button
+            onClick={() => {
+              const now = new Date();
+              const mondayOffset = (now.getDay() + 6) % 7;
+              const monday = new Date(now);
+              monday.setDate(now.getDate() - mondayOffset);
+              monday.setHours(0, 0, 0, 0);
+              setCalendarStart(monday);
+            }}
+            className="px-4 py-2 rounded-xl bg-white text-black text-sm font-bold hover:bg-gray-200 transition-colors"
+          >
+            Semana Atual
+          </button>
+          <button
+            onClick={() => setCalendarStart((prev) => {
+              const next = new Date(prev);
+              next.setDate(prev.getDate() + 7);
+              return next;
+            })}
+            className="px-4 py-2 rounded-xl bg-white/10 text-sm font-bold hover:bg-white/20 transition-colors"
+          >
+            Próxima Semana
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-7 gap-3">
+          {weekDays.map((day, index) => {
+            const dayAppointments = appointmentsByDay[index];
+            const isToday = day.toDateString() === new Date().toDateString();
+            return (
+              <div key={day.toISOString()} className={cn('rounded-2xl border p-3 min-h-60', isToday ? 'border-white/30 bg-white/[0.07]' : 'border-white/10 bg-black/30')}>
+                <div className="mb-3">
+                  <p className="text-[10px] uppercase tracking-widest text-gray-500">{day.toLocaleDateString('pt-BR', { weekday: 'short' })}</p>
+                  <p className="text-sm text-white font-bold">{day.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</p>
+                </div>
+
+                <div className="space-y-2">
+                  {dayAppointments.map((apt) => (
+                    <button
+                      key={apt.id}
+                      onClick={() => setSelectedAppointment(apt)}
+                      className={cn(
+                        'w-full text-left p-2 rounded-xl border transition-colors',
+                        apt.status === 'cancelled' ? 'border-red-500/30 bg-red-500/10' :
+                        apt.status === 'completed' ? 'border-emerald-500/30 bg-emerald-500/10' :
+                        apt.status === 'confirmed' ? 'border-blue-500/30 bg-blue-500/10' :
+                        'border-amber-500/30 bg-amber-500/10'
+                      )}
+                    >
+                      <div className="text-xs font-bold text-white">{new Date(apt.appointment_date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</div>
+                      <div className="text-xs text-gray-200 truncate">{apt.customer_name || 'Cliente'}</div>
+                      <div className="text-[10px] text-gray-400 truncate">{apt.service_type}</div>
+                    </button>
+                  ))}
+                  {dayAppointments.length === 0 && (
+                    <p className="text-[11px] text-gray-600 text-center py-4">Sem horários</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
@@ -685,23 +828,48 @@ const AppointmentsManager = () => {
         </table>
       </div>
 
+      {selectedAppointment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-lg shadow-2xl">
+            <h3 className="text-xl font-medium mb-6">Detalhes do Agendamento</h3>
+            <div className="space-y-3 text-sm mb-7">
+              <div className="flex justify-between"><span className="text-gray-500">Cliente</span><span className="text-white">{selectedAppointment.customer_name}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Barbeiro</span><span className="text-white">{selectedAppointment.barber_name}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Serviço</span><span className="text-white">{selectedAppointment.service_type}</span></div>
+              <div className="flex justify-between"><span className="text-gray-500">Data/Hora</span><span className="text-white">{new Date(selectedAppointment.appointment_date).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</span></div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <button onClick={() => moveAppointment(selectedAppointment, -30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Antecipar 30 min</button>
+              <button onClick={() => moveAppointment(selectedAppointment, 30)} className="py-3 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-bold transition-colors">Adiar 30 min</button>
+            </div>
+
+            <div className="flex gap-3">
+              <button onClick={() => { setEditing(selectedAppointment); setSelectedAppointment(null); }} className="flex-1 py-3 rounded-xl bg-white text-black font-bold hover:bg-gray-200 transition-colors">Editar</button>
+              <button onClick={() => updateAppointment(selectedAppointment.id, { status: 'cancelled' })} className="flex-1 py-3 rounded-xl bg-red-500/90 text-white font-bold hover:bg-red-500 transition-colors">Cancelar Agendamento</button>
+              <button onClick={() => setSelectedAppointment(null)} className="px-4 py-3 rounded-xl bg-white/10 font-bold hover:bg-white/20 transition-colors">Fechar</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Agendamento' : 'Novo Agendamento'}</h3>
             <div className="space-y-4">
-              <select value={editing.customer_id || ''} onChange={e => setEditing({...editing, customer_id: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+              <select value={editing.customer_id || ''} onChange={e => setEditing({ ...editing, customer_id: Number(e.target.value) })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                 <option value="">Selecione o Cliente</option>
                 {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
-              <select value={editing.barber_id || ''} onChange={e => setEditing({...editing, barber_id: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+              <select value={editing.barber_id || ''} onChange={e => setEditing({ ...editing, barber_id: Number(e.target.value) })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                 <option value="">Selecione o Barbeiro</option>
                 {barbers.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
-              <input placeholder="Tipo de Serviço (ex: Corte e Barba)" value={editing.service_type || ''} onChange={e => setEditing({...editing, service_type: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input type="datetime-local" value={editing.appointment_date ? editing.appointment_date.slice(0, 16) : ''} onChange={e => setEditing({...editing, appointment_date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Tipo de Serviço (ex: Corte e Barba)" value={editing.service_type || ''} onChange={e => setEditing({ ...editing, service_type: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="datetime-local" value={formatInputDateTime(editing.appointment_date)} onChange={e => setEditing({ ...editing, appointment_date: new Date(e.target.value).toISOString() })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               {editing.id && (
-                <select value={editing.status || 'pending'} onChange={e => setEditing({...editing, status: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                <select value={editing.status || 'pending'} onChange={e => setEditing({ ...editing, status: e.target.value })} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
                   <option value="pending">Pendente</option>
                   <option value="confirmed">Confirmado</option>
                   <option value="completed">Concluído</option>
@@ -1556,8 +1724,20 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
     finally { setLoading(false); }
   };
 
-  const today = new Date().toISOString().split('T')[0];
-  const stepLabels = ['Serviço', 'Barbeiro', 'Data/Hora', 'Seus Dados', 'Confirmar'];
+  const todayDate = new Date();
+  const stepLabels = ['Serviço', 'Barbeiro', 'Data', 'Horário', 'Seus Dados', 'Confirmar'];
+  const bookingDays = Array.from({ length: 21 }, (_, idx) => {
+    const date = new Date(todayDate);
+    date.setDate(todayDate.getDate() + idx);
+    return date;
+  });
+
+  const toDateKey = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
 
   if (confirmed) {
     return (
@@ -1621,24 +1801,65 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
           {step === 3 && (
             <div className="space-y-6">
               <div>
-                <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-2 block">Escolha a Data</label>
-                <input type="date" min={today} value={selectedDate} onChange={e => { setSelectedDate(e.target.value); setSelectedTime(''); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm max-w-xs" />
-              </div>
-              {selectedDate && (
-                <div>
-                  <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 block">Horários Disponíveis</label>
-                  <div className="grid grid-cols-3 md:grid-cols-5 gap-3">
-                    {slots.map(slot => (
-                      <button key={slot} onClick={() => { setSelectedTime(slot); setStep(4); }} className={cn("py-3 px-4 rounded-xl border text-sm font-medium transition-all", selectedTime === slot ? "border-white bg-white text-black" : "border-white/10 hover:border-white/30 text-white")}>{slot}</button>
-                    ))}
-                    {slots.length === 0 && <p className="text-gray-500 col-span-5 text-center py-6">Nenhum horário disponível nesta data.</p>}
-                  </div>
+                <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 block">Selecione uma Data</label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
+                  {bookingDays.map((date) => {
+                    const key = toDateKey(date);
+                    const selected = key === selectedDate;
+                    const weekend = date.getDay() === 0 || date.getDay() === 6;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => { setSelectedDate(key); setSelectedTime(''); setStep(4); }}
+                        className={cn(
+                          'p-4 rounded-xl border text-left transition-all',
+                          selected ? 'border-white bg-white text-black' : 'border-white/10 bg-zinc-900/40 hover:border-white/30',
+                          weekend && !selected ? 'opacity-90' : ''
+                        )}
+                      >
+                        <p className={cn('text-[10px] uppercase tracking-widest', selected ? 'text-black/60' : 'text-gray-500')}>
+                          {date.toLocaleDateString('pt-BR', { weekday: 'short' })}
+                        </p>
+                        <p className="text-lg font-bold">{date.toLocaleDateString('pt-BR', { day: '2-digit' })}</p>
+                        <p className={cn('text-xs', selected ? 'text-black/70' : 'text-gray-400')}>
+                          {date.toLocaleDateString('pt-BR', { month: 'short' })}
+                        </p>
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
+              </div>
             </div>
           )}
 
           {step === 4 && (
+            <div className="space-y-6">
+              <div className="p-4 rounded-xl border border-white/10 bg-zinc-900/30">
+                <p className="text-xs text-gray-400">Data selecionada</p>
+                <p className="text-lg font-medium text-white">
+                  {selectedDate ? new Date(`${selectedDate}T00:00:00`).toLocaleDateString('pt-BR', { dateStyle: 'full' }) : 'Nenhuma data'}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-widest text-gray-500 mb-3 block">Selecione o Horário</label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                  {slots.map(slot => (
+                    <button
+                      key={slot}
+                      onClick={() => { setSelectedTime(slot); setStep(5); }}
+                      className={cn('py-3 px-4 rounded-xl border text-sm font-medium transition-all', selectedTime === slot ? 'border-white bg-white text-black' : 'border-white/10 hover:border-white/30 text-white')}
+                    >
+                      {slot}
+                    </button>
+                  ))}
+                  {slots.length === 0 && <p className="text-gray-500 col-span-5 text-center py-6">Nenhum horário livre para esta data.</p>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {step === 5 && (
             <div className="max-w-md mx-auto space-y-4">
               <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => { setClientData({...clientData, name: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
               <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => { setClientData({...clientData, phone: e.target.value}); setSubscriptionBlocked(false); }} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
@@ -1665,9 +1886,9 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
                     const hasActive = Array.isArray(subs) && subs.some(
                       (s: any) => s.customer_email?.toLowerCase() === clientData.email.toLowerCase() && s.status === 'active'
                     );
-                    if (hasActive) { setStep(5); }
+                    if (hasActive) { setStep(6); }
                     else { setSubscriptionBlocked(true); }
-                  } catch { setStep(5); } // se API falhar, permite continuar
+                  } catch { setStep(6); } // se API falhar, permite continuar
                   finally { setCheckingSubscription(false); }
                 }}
                 disabled={checkingSubscription}
@@ -1678,7 +1899,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) 
             </div>
           )}
 
-          {step === 5 && (
+          {step === 6 && (
             <div className="max-w-md mx-auto bg-zinc-900/40 border border-white/10 rounded-[2.5rem] p-8">
               <h3 className="text-xl font-medium mb-6 text-center">Confirme seu Agendamento</h3>
               <div className="space-y-4 mb-8">
@@ -2286,13 +2507,52 @@ const SettingsView = () => {
                 Client ID: {integrationStatus?.google.hasClientId ? 'OK' : 'Ausente'} | Secret: {integrationStatus?.google.hasClientSecret ? 'OK' : 'Ausente'}
               </p>
               <button onClick={connectGoogleCalendar} className="px-4 py-2 rounded-lg bg-white text-black text-xs font-bold hover:bg-gray-200 transition-colors">
-                Conectar Google Calendar
+                Conectar Conta do Google
               </button>
             </div>
           </div>
           <div className="mt-4">
             <button onClick={fetchIntegrationStatus} className="px-4 py-2 rounded-lg bg-white/10 text-white text-xs font-bold hover:bg-white/20 transition-colors">
               Atualizar Status
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
+          <h4 className="text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">Integração Google Calendar</h4>
+          <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+            Conecte a conta do Google para sincronizar agendamentos automaticamente com o calendário do barbeiro.
+            Se preferir, você pode configurar as credenciais manualmente no backend via variáveis de ambiente
+            <strong className="text-gray-300"> GOOGLE_CLIENT_ID</strong>, <strong className="text-gray-300">GOOGLE_CLIENT_SECRET</strong> e <strong className="text-gray-300">GOOGLE_REDIRECT_URI</strong>.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+              <p className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Conta Google</p>
+              <p className={cn('text-sm font-bold', integrationStatus?.google.connected ? 'text-emerald-400' : 'text-amber-400')}>
+                {integrationStatus?.google.connected ? 'Conectada' : 'Desconectada'}
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+              <p className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Client ID</p>
+              <p className={cn('text-sm font-bold', integrationStatus?.google.hasClientId ? 'text-emerald-400' : 'text-red-400')}>
+                {integrationStatus?.google.hasClientId ? 'Configurado' : 'Ausente'}
+              </p>
+            </div>
+            <div className="p-4 rounded-xl bg-black/40 border border-white/10">
+              <p className="text-[10px] uppercase tracking-widest text-gray-500 mb-1">Client Secret</p>
+              <p className={cn('text-sm font-bold', integrationStatus?.google.hasClientSecret ? 'text-emerald-400' : 'text-red-400')}>
+                {integrationStatus?.google.hasClientSecret ? 'Configurado' : 'Ausente'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button onClick={connectGoogleCalendar} className="px-5 py-3 rounded-xl bg-white text-black text-sm font-bold hover:bg-gray-200 transition-colors">
+              Conectar Conta do Google
+            </button>
+            <button onClick={fetchIntegrationStatus} className="px-5 py-3 rounded-xl bg-white/10 text-white text-sm font-bold hover:bg-white/20 transition-colors">
+              Revalidar Integração
             </button>
           </div>
         </div>

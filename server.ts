@@ -1017,25 +1017,91 @@ async function startServer() {
   app.get("/api/public/available-slots", async (req, res) => {
     const { barberId, date } = req.query;
 
-    const { data: cfgRows } = await supabase.from('config').select('key, value').in('key', ['working_hours_start', 'working_hours_end']);
+    if (!barberId || !date) {
+      return res.status(400).json({ error: 'Parâmetros barberId e date são obrigatórios.' });
+    }
+
+    const { data: cfgRows } = await supabase
+      .from('config')
+      .select('key, value')
+      .in('key', ['working_hours_start', 'working_hours_end', 'booking_slot_minutes']);
+
     const cfg: Record<string, string> = {};
     cfgRows?.forEach(r => { cfg[r.key] = r.value; });
 
-    const startH = parseInt((cfg.working_hours_start || '09:00').split(':')[0]);
-    const endH = parseInt((cfg.working_hours_end || '18:00').split(':')[0]);
+    const parseTimeToMinutes = (time: string, fallback: number) => {
+      const [hStr, mStr] = (time || '').split(':');
+      const h = Number(hStr);
+      const m = Number(mStr || '0');
+      if (!Number.isFinite(h) || !Number.isFinite(m)) return fallback;
+      return h * 60 + m;
+    };
+
+    const workingStart = parseTimeToMinutes(cfg.working_hours_start || '09:00', 9 * 60);
+    const workingEnd = parseTimeToMinutes(cfg.working_hours_end || '18:00', 18 * 60);
+    const slotMinutes = Math.max(15, Number(cfg.booking_slot_minutes || '60') || 60);
+
     const slots: string[] = [];
-    for (let h = startH; h <= endH; h++) slots.push(`${h.toString().padStart(2, '0')}:00`);
+    for (let minute = workingStart; minute + slotMinutes <= workingEnd; minute += slotMinutes) {
+      const h = Math.floor(minute / 60);
+      const m = minute % 60;
+      slots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    }
+
+    const dayStartIso = `${date}T00:00:00`;
+    const dayEndIso = `${date}T23:59:59`;
 
     const { data: appointments } = await supabase
       .from('appointments')
       .select('appointment_date')
       .eq('barber_id', barberId)
-      .gte('appointment_date', `${date}T00:00:00`)
-      .lte('appointment_date', `${date}T23:59:59`);
-    
-    const bookedHours = appointments?.map(a => new Date(a.appointment_date).getHours().toString().padStart(2, '0') + ":00") || [];
-    const available = slots.filter(s => !bookedHours.includes(s));
-    
+      .neq('status', 'cancelled')
+      .gte('appointment_date', dayStartIso)
+      .lte('appointment_date', dayEndIso);
+
+    const busyRanges: Array<{ start: Date; end: Date }> = [];
+
+    appointments?.forEach((apt) => {
+      const start = new Date(apt.appointment_date);
+      const end = new Date(start.getTime() + slotMinutes * 60000);
+      busyRanges.push({ start, end });
+    });
+
+    try {
+      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
+      if (config?.value) {
+        const tokens = JSON.parse(config.value);
+        oauth2Client.setCredentials(tokens);
+        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+        const gcalEvents = await calendar.events.list({
+          calendarId: 'primary',
+          timeMin: new Date(`${date}T00:00:00`).toISOString(),
+          timeMax: new Date(`${date}T23:59:59`).toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime',
+          maxResults: 250,
+        });
+
+        gcalEvents.data.items?.forEach((event) => {
+          if (!event.start?.dateTime || !event.end?.dateTime) return;
+          busyRanges.push({
+            start: new Date(event.start.dateTime),
+            end: new Date(event.end.dateTime),
+          });
+        });
+      }
+    } catch (error) {
+      console.warn('Falha ao buscar eventos do Google Calendar para disponibilidade:', error);
+    }
+
+    const available = slots.filter((slot) => {
+      const slotStart = new Date(`${date}T${slot}:00`);
+      const slotEnd = new Date(slotStart.getTime() + slotMinutes * 60000);
+
+      return !busyRanges.some(({ start, end }) => slotStart < end && slotEnd > start);
+    });
+
     res.json(available);
   });
 
