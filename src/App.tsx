@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseConnection } from './lib/supabase';
 import { Session } from '@supabase/supabase-js';
+import { LegalPage } from './legal';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -109,12 +110,14 @@ interface Expense {
   date: string;
 }
 
+type AppRoute = 'landing' | 'booking' | 'admin' | 'privacy' | 'terms';
+
 // --- Components ---
 
-const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: string, setActiveTab: (t: string) => void, session: Session | null }) => {
+const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: AppRoute, setActiveTab: (t: AppRoute) => void, session: Session | null }) => {
   const [isOpen, setIsOpen] = useState(false);
 
-  const navItems = [
+  const navItems: Array<{ id: AppRoute; label: string; icon: typeof Scissors }> = [
     { id: 'landing', label: 'Início', icon: Scissors },
     { id: 'booking', label: 'Agendar', icon: Calendar },
     { id: 'admin', label: 'Dashboard', icon: LayoutDashboard },
@@ -258,7 +261,7 @@ const Testimonials = () => {
   );
 };
 
-const LandingPage = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
+const LandingPage = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }) => {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [videoUrl, setVideoUrl] = useState("https://assets.mixkit.co/videos/preview/mixkit-barber-cutting-hair-with-scissors-close-up-42862-large.mp4");
 
@@ -1895,7 +1898,7 @@ const FinancialReport = () => {
   );
 };
 
-const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: string) => void }) => {
+const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }) => {
   const [step, setStep] = useState(1);
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [barbers, setBarbers] = useState<{id: number; name: string; specialty: string; photo_url?: string}[]>([]);
@@ -2602,10 +2605,11 @@ const SettingsView = () => {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [syncingCalendar, setSyncingCalendar] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
   const [integrationStatus, setIntegrationStatus] = useState<{
     stripe: { configured: boolean };
-    google: { hasClientId: boolean; hasClientSecret: boolean; redirectUri: string; connected: boolean };
+    google: { hasClientId: boolean; hasClientSecret: boolean; redirectUri: string; connected: boolean; configured?: boolean };
   } | null>(null);
   const [settings, setSettings] = useState({
     business_name: 'MA BEARD STYLE',
@@ -2665,11 +2669,62 @@ const SettingsView = () => {
     try {
       const res = await fetch('/api/auth/google/url');
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Nao foi possivel iniciar a autenticacao.');
       if (!data.url) throw new Error('Não foi possível gerar a URL de autenticação.');
-      window.open(data.url, 'google-auth', 'width=560,height=720');
+      const popup = window.open(data.url, 'google-auth', 'width=560,height=720');
+      if (!popup) throw new Error('O navegador bloqueou a janela do Google. Libere pop-ups e tente novamente.');
       setSettingsStatus({ type: 'info', message: 'Finalize a autenticação na janela do Google.' });
     } catch (error: any) {
       setSettingsStatus({ type: 'error', message: `Erro ao iniciar conexão com Google: ${error.message}` });
+    }
+  };
+
+  const syncGoogleCalendar = async () => {
+    setSyncingCalendar(true);
+    setSettingsStatus({ type: 'info', message: 'Sincronizando agendamentos com o Google Calendar...' });
+
+    try {
+      const res = await fetch('/api/calendar/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao sincronizar com o Google Calendar.');
+
+      const syncedCount = Number(data.count || 0);
+      const failedCount = Number(data.failed || 0);
+      const totalCount = Number(data.total || syncedCount);
+
+      const message = syncedCount > 0
+        ? `Sincronizacao concluida. ${syncedCount} de ${totalCount} agendamento(s) enviados ao Google Calendar.${failedCount ? ` ${failedCount} falharam.` : ''}`
+        : 'Nenhum agendamento pendente para sincronizar.';
+
+      setSettingsStatus({ type: 'success', message });
+      fetchIntegrationStatus();
+    } catch (error: any) {
+      setSettingsStatus({ type: 'error', message: `Falha ao sincronizar calendario: ${error.message}` });
+    } finally {
+      setSyncingCalendar(false);
+    }
+  };
+
+  const disconnectGoogleCalendar = async () => {
+    if (!integrationStatus?.google.connected) {
+      setSettingsStatus({ type: 'info', message: 'Nenhuma conta Google conectada no momento.' });
+      return;
+    }
+
+    const confirmed = window.confirm('Desconectar a conta Google e remover os tokens salvos desta integração?');
+    if (!confirmed) return;
+
+    setSettingsStatus({ type: 'info', message: 'Removendo a conexão com o Google Calendar...' });
+
+    try {
+      const res = await fetch('/api/auth/google/connection', { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Falha ao desconectar a conta Google.');
+
+      setSettingsStatus({ type: 'success', message: 'Conta Google desconectada e tokens locais removidos.' });
+      fetchIntegrationStatus();
+    } catch (error: any) {
+      setSettingsStatus({ type: 'error', message: `Falha ao desconectar Google Calendar: ${error.message}` });
     }
   };
 
@@ -2778,6 +2833,20 @@ const SettingsView = () => {
               <button onClick={connectGoogleCalendar} className="px-4 py-2 rounded-lg bg-white text-black text-xs font-bold hover:bg-gray-200 transition-colors">
                 Conectar Conta do Google
               </button>
+              <button
+                onClick={syncGoogleCalendar}
+                disabled={syncingCalendar || !integrationStatus?.google.connected}
+                className="px-4 py-2 rounded-lg bg-white/10 text-white text-xs font-bold hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {syncingCalendar ? 'Sincronizando...' : 'Sincronizar Agenda'}
+              </button>
+              <button
+                onClick={disconnectGoogleCalendar}
+                disabled={!integrationStatus?.google.connected}
+                className="px-4 py-2 rounded-lg bg-red-500/10 text-red-300 text-xs font-bold hover:bg-red-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Desconectar Conta
+              </button>
             </div>
           </div>
           <div className="mt-4">
@@ -2794,6 +2863,24 @@ const SettingsView = () => {
             Se preferir, você pode configurar as credenciais manualmente no backend via variáveis de ambiente
             <strong className="text-gray-300"> GOOGLE_CLIENT_ID</strong>, <strong className="text-gray-300">GOOGLE_CLIENT_SECRET</strong> e <strong className="text-gray-300">GOOGLE_REDIRECT_URI</strong>.
           </p>
+
+          <div className="mb-5 rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4 text-xs leading-relaxed text-sky-50">
+            <p>
+              Ao conectar o Google Calendar, o sistema usa os dados apenas para sincronizar agendamentos, atualizar
+              eventos, remover compromissos cancelados e verificar conflitos de horÃ¡rio no calendÃ¡rio principal.
+            </p>
+            <p className="mt-3">
+              VocÃª pode revisar os documentos pÃºblicos exigidos pelo Google e revogar a integraÃ§Ã£o a qualquer momento.
+            </p>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <a href="/privacy-policy" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white text-black font-bold hover:bg-gray-200 transition-colors">
+                PolÃ­tica de Privacidade
+              </a>
+              <a href="/terms-of-service" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white/10 text-white font-bold hover:bg-white/20 transition-colors">
+                Termos de Uso
+              </a>
+            </div>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
             <div className="p-4 rounded-xl bg-black/40 border border-white/10">
@@ -2819,6 +2906,13 @@ const SettingsView = () => {
           <div className="flex flex-wrap gap-3">
             <button onClick={connectGoogleCalendar} className="px-5 py-3 rounded-xl bg-white text-black text-sm font-bold hover:bg-gray-200 transition-colors">
               Conectar Conta do Google
+            </button>
+            <button
+              onClick={syncGoogleCalendar}
+              disabled={syncingCalendar || !integrationStatus?.google.connected}
+              className="px-5 py-3 rounded-xl bg-emerald-500/15 text-emerald-300 text-sm font-bold hover:bg-emerald-500/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {syncingCalendar ? 'Sincronizando...' : 'Sincronizar Pendentes'}
             </button>
             <button onClick={fetchIntegrationStatus} className="px-5 py-3 rounded-xl bg-white/10 text-white text-sm font-bold hover:bg-white/20 transition-colors">
               Revalidar Integração
@@ -3003,9 +3097,54 @@ const SettingsView = () => {
   );
 };
 
+const APP_TAB_PATHS: Record<AppRoute, string> = {
+  landing: '/',
+  booking: '/booking',
+  admin: '/admin',
+  privacy: '/privacy-policy',
+  terms: '/terms-of-service',
+};
+
+const getInitialTabFromLocation = (): AppRoute => {
+  if (typeof window === 'undefined') return 'landing';
+
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (pathname === '/booking') return 'booking';
+  if (pathname === '/admin') return 'admin';
+  if (pathname === '/privacy-policy') return 'privacy';
+  if (pathname === '/terms-of-service') return 'terms';
+
+  const tabParam = new URLSearchParams(window.location.search).get('tab');
+  if (tabParam === 'landing' || tabParam === 'booking' || tabParam === 'admin' || tabParam === 'privacy' || tabParam === 'terms') {
+    return tabParam;
+  }
+
+  const hash = window.location.hash.replace(/^#/, '');
+  if (hash === 'landing' || hash === 'booking' || hash === 'admin' || hash === 'privacy' || hash === 'terms') {
+    return hash;
+  }
+
+  return 'landing';
+};
+
+const syncTabWithLocation = (tab: AppRoute) => {
+  if (typeof window === 'undefined') return;
+
+  const nextPath = APP_TAB_PATHS[tab];
+  if (window.location.pathname === nextPath && !window.location.search && !window.location.hash) {
+    return;
+  }
+
+  window.history.replaceState(null, '', nextPath);
+};
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('landing');
+  const [activeTab, setActiveTab] = useState<AppRoute>(() => getInitialTabFromLocation());
   const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    syncTabWithLocation(activeTab);
+  }, [activeTab]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -3041,6 +3180,10 @@ export default function App() {
             <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'booking' ? (
             <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking setActiveTab={setActiveTab} /></motion.div>
+          ) : activeTab === 'privacy' ? (
+            <motion.div key="privacy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="privacy" /></motion.div>
+          ) : activeTab === 'terms' ? (
+            <motion.div key="terms" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="terms" /></motion.div>
           ) : (
             !session ? (
               <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><Auth /></motion.div>
@@ -3073,6 +3216,14 @@ export default function App() {
       <footer className="border-t border-white/5 py-12 mt-20">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <div className="flex items-center justify-center gap-2 mb-4"><Scissors className="w-5 h-5 text-gray-500" /><span className="text-sm font-bold tracking-widest text-gray-500 uppercase">MA Beard Style</span></div>
+          <div className="mb-4 flex flex-wrap items-center justify-center gap-4 text-xs text-gray-400">
+            <a href="/privacy-policy" className="transition-colors hover:text-white">
+              PolÃ­tica de Privacidade
+            </a>
+            <a href="/terms-of-service" className="transition-colors hover:text-white">
+              Termos de Uso
+            </a>
+          </div>
           <p className="text-xs text-gray-600">© 2026 MA Beard Style. Todos os direitos reservados.</p>
         </div>
       </footer>

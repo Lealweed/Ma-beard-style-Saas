@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import path from "path";
 
 dotenv.config();
 
@@ -30,11 +31,19 @@ if (!stripe) {
     .catch((err) => console.error("ERRO: STRIPE_SECRET_KEY parece inválida ou expirada:", err.message));
 }
 
+const GOOGLE_TOKEN_CONFIG_KEY = "google_calendar_tokens";
+
+const getGoogleRedirectUriValue = () =>
+  process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "");
+
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : undefined)
+  getGoogleRedirectUriValue() || undefined
 );
+
+const hasGoogleCalendarSecrets = () =>
+  Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && getGoogleRedirectUriValue());
 
 // Helper to get redirect URI for display
 const getGoogleRedirectUri = () => {
@@ -49,6 +58,212 @@ const supabase = isSupabaseConfigured ? createClient(supabaseUrl, supabaseKey) :
 if (!isSupabaseConfigured) {
   console.warn("AVISO: SUPABASE_URL/SUPABASE_ANON_KEY não encontrados. APIs que dependem do Supabase falharão até configurar os secrets.");
 }
+
+const isGoogleNotFoundError = (error: any) => {
+  const status = error?.code || error?.response?.status;
+  const message = String(error?.message || "");
+  return status === 404 || message.includes("Not Found");
+};
+
+const getStoredGoogleTokens = async (): Promise<Record<string, any> | null> => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("config")
+    .select("value")
+    .eq("key", GOOGLE_TOKEN_CONFIG_KEY)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.value) return null;
+
+  try {
+    return JSON.parse(data.value);
+  } catch (_error) {
+    throw new Error("Os tokens armazenados do Google Calendar estao invalidos.");
+  }
+};
+
+const saveGoogleTokens = async (tokens: Record<string, any>) => {
+  if (!supabase || !tokens || Object.keys(tokens).length === 0) return null;
+
+  const currentTokens = (await getStoredGoogleTokens()) || {};
+  const mergedTokens = { ...currentTokens, ...tokens };
+
+  if (currentTokens.refresh_token && !mergedTokens.refresh_token) {
+    mergedTokens.refresh_token = currentTokens.refresh_token;
+  }
+
+  const { error } = await supabase
+    .from("config")
+    .upsert({ key: GOOGLE_TOKEN_CONFIG_KEY, value: JSON.stringify(mergedTokens) }, { onConflict: "key" });
+
+  if (error) throw error;
+  return mergedTokens;
+};
+
+const clearStoredGoogleTokens = async () => {
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("config")
+    .delete()
+    .eq("key", GOOGLE_TOKEN_CONFIG_KEY);
+
+  if (error) throw error;
+};
+
+oauth2Client.on("tokens", (tokens) => {
+  saveGoogleTokens(tokens as Record<string, any>).catch((error) => {
+    console.error("Erro ao persistir refresh/access token do Google Calendar:", error);
+  });
+});
+
+const getGoogleCalendarClient = async ({ validateConnection = false }: { validateConnection?: boolean } = {}) => {
+  if (!hasGoogleCalendarSecrets()) {
+    throw new Error("Credenciais do Google Calendar nao configuradas no servidor.");
+  }
+
+  const tokens = await getStoredGoogleTokens();
+  if (!tokens) return null;
+
+  oauth2Client.setCredentials(tokens);
+  const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+
+  if (validateConnection) {
+    await calendar.events.list({
+      calendarId: "primary",
+      maxResults: 1,
+      singleEvents: true,
+      timeMin: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+  }
+
+  return { calendar, tokens };
+};
+
+const getAppointmentDurationMinutes = async () => {
+  if (!supabase) return 60;
+
+  const { data } = await supabase
+    .from("config")
+    .select("value")
+    .eq("key", "booking_slot_minutes")
+    .maybeSingle();
+
+  const duration = Number(data?.value || DEFAULT_SYSTEM_SETTINGS.booking_slot_minutes);
+  if (!Number.isFinite(duration)) return 60;
+  return Math.max(15, duration);
+};
+
+const isBlockedAppointment = (appointment: any) => {
+  const serviceType = String(appointment?.service_type || "").toLowerCase();
+  return !appointment?.customer_id && (serviceType.includes("bloque") || serviceType.includes("indispon"));
+};
+
+const getGoogleEventRequestBody = async (appointment: any) => {
+  const durationMinutes = await getAppointmentDurationMinutes();
+  const start = new Date(appointment.appointment_date);
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  const blocked = isBlockedAppointment(appointment);
+  const barberName = appointment?.barbers?.name || appointment?.barber_name || "Barbeiro";
+  const customerName = appointment?.customers?.name || appointment?.customer_name || "Cliente";
+  const customerPhone = appointment?.customers?.phone || appointment?.customer_phone;
+  const summary = blocked
+    ? `Horario bloqueado - ${barberName}`
+    : `Corte: ${customerName} com ${barberName}`;
+
+  const descriptionLines = blocked
+    ? [
+        "Bloqueio manual de agenda.",
+        `Barbeiro: ${barberName}`,
+      ]
+    : [
+        `Servico: ${appointment.service_type || "Nao informado"}`,
+        `Cliente: ${customerName}`,
+        `Barbeiro: ${barberName}`,
+        customerPhone ? `Telefone: ${customerPhone}` : null,
+        `Status: ${appointment.status || "pending"}`,
+      ];
+
+  return {
+    summary,
+    description: descriptionLines.filter(Boolean).join("\n"),
+    start: { dateTime: start.toISOString() },
+    end: { dateTime: end.toISOString() },
+  };
+};
+
+const getAppointmentForGoogleSync = async (appointmentId: number | string) => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("appointments")
+    .select("*, customers(name, phone), barbers(name)")
+    .eq("id", appointmentId)
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+const syncAppointmentToGoogleCalendar = async (appointmentId: number | string) => {
+  const googleClient = await getGoogleCalendarClient();
+  if (!googleClient) {
+    return { synced: false, action: "skipped", reason: "Google Calendar nao conectado." };
+  }
+
+  const appointment = await getAppointmentForGoogleSync(appointmentId);
+  if (!appointment) {
+    return { synced: false, action: "skipped", reason: "Agendamento nao encontrado." };
+  }
+
+  if (appointment.status === "cancelled") {
+    if (!appointment.google_event_id) {
+      return { synced: false, action: "skipped", reason: "Agendamento cancelado sem evento vinculado." };
+    }
+
+    try {
+      await googleClient.calendar.events.delete({
+        calendarId: "primary",
+        eventId: appointment.google_event_id,
+      });
+    } catch (error) {
+      if (!isGoogleNotFoundError(error)) throw error;
+    }
+
+    await supabase!.from("appointments").update({ google_event_id: null }).eq("id", appointmentId);
+    return { synced: true, action: "deleted", eventId: null };
+  }
+
+  const requestBody = await getGoogleEventRequestBody(appointment);
+
+  if (appointment.google_event_id) {
+    try {
+      await googleClient.calendar.events.patch({
+        calendarId: "primary",
+        eventId: appointment.google_event_id,
+        requestBody,
+      });
+
+      return { synced: true, action: "updated", eventId: appointment.google_event_id };
+    } catch (error) {
+      if (!isGoogleNotFoundError(error)) throw error;
+    }
+  }
+
+  const event = await googleClient.calendar.events.insert({
+    calendarId: "primary",
+    requestBody,
+  });
+
+  const eventId = event.data.id || null;
+  if (eventId) {
+    await supabase!.from("appointments").update({ google_event_id: eventId }).eq("id", appointmentId);
+  }
+
+  return { synced: true, action: "created", eventId };
+};
 
 const SYSTEM_SETTING_KEYS = [
   "business_name",
@@ -223,12 +438,7 @@ async function startServer() {
   app.get("/api/integrations/status", async (req, res) => {
     let googleConnected = false;
     try {
-      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
-      if (config?.value) {
-        const tokens = JSON.parse(config.value);
-        oauth2Client.setCredentials(tokens);
-        const calendar = google.calendar({ version: "v3", auth: oauth2Client });
-        await calendar.calendarList.list({ maxResults: 1 });
+      if (await getGoogleCalendarClient({ validateConnection: true })) {
         googleConnected = true;
       }
     } catch (_e) {}
@@ -241,6 +451,7 @@ async function startServer() {
         hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
         hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
         redirectUri: getGoogleRedirectUri(),
+        configured: hasGoogleCalendarSecrets(),
         connected: googleConnected,
       },
     });
@@ -338,6 +549,8 @@ async function startServer() {
       
       // Try to sync to Google Calendar immediately if connected
       try {
+        await syncAppointmentToGoogleCalendar(data[0].id);
+        if (false) {
         const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
         if (config) {
           const tokens = JSON.parse(config.value);
@@ -376,6 +589,7 @@ async function startServer() {
             }
           }
         }
+        }
       } catch (syncErr) {
         console.error("Erro ao sincronizar agendamento com Google:", syncErr);
       }
@@ -408,8 +622,10 @@ async function startServer() {
       if (error) throw error;
 
       // Sync update to Google Calendar
-      if (oldApt.google_event_id) {
+      if (oldApt) {
         try {
+          await syncAppointmentToGoogleCalendar(id);
+          if (false) {
           const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
           if (config) {
             const tokens = JSON.parse(config.value);
@@ -454,6 +670,7 @@ async function startServer() {
               }
             }
           }
+          }
         } catch (syncErr) {
           console.error("Erro ao atualizar agendamento no Google:", syncErr);
         }
@@ -473,6 +690,11 @@ async function startServer() {
       // Delete from Google Calendar if exists
       if (apt?.google_event_id) {
         try {
+          const googleClient = await getGoogleCalendarClient();
+          if (googleClient) {
+            await googleClient.calendar.events.delete({ calendarId: "primary", eventId: apt.google_event_id });
+          }
+          if (false) {
           const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
           if (config) {
             const tokens = JSON.parse(config.value);
@@ -480,8 +702,11 @@ async function startServer() {
             const calendar = google.calendar({ version: "v3", auth: oauth2Client });
             await calendar.events.delete({ calendarId: "primary", eventId: apt.google_event_id });
           }
+          }
         } catch (syncErr) {
-          console.error("Erro ao excluir agendamento no Google:", syncErr);
+          if (!isGoogleNotFoundError(syncErr)) {
+            console.error("Erro ao excluir agendamento no Google:", syncErr);
+          }
         }
       }
 
@@ -1196,12 +1421,7 @@ async function startServer() {
   app.get("/api/auth/google/config", async (req, res) => {
     let connected = false;
     try {
-      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
-      if (config) {
-        const tokens = JSON.parse(config.value);
-        oauth2Client.setCredentials(tokens);
-        const calendar = google.calendar({ version: "v3", auth: oauth2Client });
-        await calendar.calendarList.list({ maxResults: 1 });
+      if (await getGoogleCalendarClient({ validateConnection: true })) {
         connected = true;
       }
     } catch (e) {}
@@ -1210,14 +1430,24 @@ async function startServer() {
       redirectUri: getGoogleRedirectUri(),
       hasClientId: Boolean(process.env.GOOGLE_CLIENT_ID),
       hasClientSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET),
+      configured: hasGoogleCalendarSecrets(),
       connected
     });
   });
 
   app.get("/api/auth/google/url", (req, res) => {
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+      return res.status(400).json({ error: "GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET precisam estar configurados no servidor." });
+    }
+
+    if (!getGoogleRedirectUriValue()) {
+      return res.status(400).json({ error: "Defina APP_URL ou GOOGLE_REDIRECT_URI para conectar o Google Calendar." });
+    }
+
     const url = oauth2Client.generateAuthUrl({
       access_type: "offline",
       scope: ["https://www.googleapis.com/auth/calendar.events"],
+      include_granted_scopes: true,
       prompt: "consent"
     });
     res.json({ url });
@@ -1225,13 +1455,14 @@ async function startServer() {
 
   app.get("/api/auth/google/callback", async (req, res) => {
     const { code } = req.query;
-    try {
-      const { tokens } = await oauth2Client.getToken(code as string);
+    if (typeof code !== "string" || !code) {
+      return res.status(400).send("Codigo de autorizacao do Google nao informado.");
+    }
 
-      await supabase.from('config').upsert({ 
-        key: 'google_calendar_tokens', 
-        value: JSON.stringify(tokens) 
-      }, { onConflict: 'key' });
+    try {
+      const { tokens } = await oauth2Client.getToken(code);
+
+      await saveGoogleTokens(tokens as Record<string, any>);
 
       res.send(`
         <html>
@@ -1253,8 +1484,34 @@ async function startServer() {
     }
   });
 
+  app.delete("/api/auth/google/connection", async (_req, res) => {
+    try {
+      const tokens = await getStoredGoogleTokens();
+      const tokenToRevoke = tokens?.refresh_token || tokens?.access_token;
+
+      if (tokenToRevoke) {
+        try {
+          await oauth2Client.revokeToken(tokenToRevoke);
+        } catch (error) {
+          console.warn("Nao foi possivel revogar o token do Google remotamente. Os tokens locais serao removidos.", error);
+        }
+      }
+
+      await clearStoredGoogleTokens();
+      oauth2Client.setCredentials({});
+
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Falha ao desconectar a conta Google." });
+    }
+  });
+
   app.post("/api/calendar/sync", async (req, res) => {
     try {
+      const googleClient = await getGoogleCalendarClient({ validateConnection: true });
+      if (!googleClient) return res.status(401).json({ error: "Google Calendar nao conectado." });
+      const calendar: any = googleClient.calendar;
+      if (false) {
       const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
       if (!config) return res.status(401).json({ error: "Google Calendar não conectado" });
 
@@ -1262,19 +1519,24 @@ async function startServer() {
       oauth2Client.setCredentials(tokens);
 
       const calendar = google.calendar({ version: "v3", auth: oauth2Client });
+      }
 
       // Fetch appointments to sync (only those not already synced)
       const { data: appointments } = await supabase
         .from('appointments')
-        .select('*, customers(name), barbers(name)')
-        .eq('status', 'pending')
+        .select('*')
+        .neq('status', 'cancelled')
         .is('google_event_id', null);
 
       if (!appointments || appointments.length === 0) return res.json({ message: "Nenhum agendamento novo para sincronizar", count: 0 });
 
       let count = 0;
+      let failed = 0;
       for (const apt of appointments) {
         try {
+          const result = await syncAppointmentToGoogleCalendar(apt.id);
+          if (result.synced) count++;
+          if (false) {
           const start = new Date(apt.appointment_date);
           const end = new Date(start.getTime() + 60 * 60 * 1000); // 1 hour duration
 
@@ -1292,12 +1554,14 @@ async function startServer() {
             await supabase.from('appointments').update({ google_event_id: event.data.id }).eq('id', apt.id);
             count++;
           }
+          }
         } catch (e) {
+          failed++;
           console.error(`Erro ao sincronizar agendamento ${apt.id}:`, e);
         }
       }
 
-      res.json({ success: true, count });
+      res.json({ success: true, count, failed, total: appointments.length });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -1312,6 +1576,13 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static("dist"));
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/") || req.path === "/api" || req.path === "/app-config.js" || path.extname(req.path)) {
+        return next();
+      }
+
+      res.sendFile(path.resolve("dist", "index.html"));
+    });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
