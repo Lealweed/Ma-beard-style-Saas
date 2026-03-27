@@ -110,7 +110,7 @@ const PrivacyPolicy = ({ settings }: { settings: PublicSettings }) => (
         items={[
           'Dados cadastrais e de contato, como nome, e-mail, telefone, CPF e informações de agendamento.',
           'Dados operacionais, como serviços escolhidos, barbeiro, horário, status do atendimento e histórico de movimentações necessárias para a operação do negócio.',
-          'Dados do Google Calendar estritamente necessários para sincronizar agenda, evitar conflitos de horário e criar, editar ou remover eventos vinculados aos agendamentos do sistema.',
+          'Dados do Google Calendar estritamente necessários para sincronizar a agenda da conta conectada, verificar conflitos no calendário principal e criar, editar ou remover eventos vinculados aos agendamentos do sistema.',
           'Dados técnicos, como logs básicos de acesso, erros, tokens de integração e identificadores internos de eventos sincronizados.',
         ]}
       />
@@ -131,21 +131,22 @@ const PrivacyPolicy = ({ settings }: { settings: PublicSettings }) => (
     <Section title="Uso do Google Calendar">
       <p>
         Quando uma conta Google é conectada, o sistema solicita a permissão
-        <code className="mx-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white">https://www.googleapis.com/auth/calendar.events</code>
-        para operar a agenda vinculada.
+        <code className="mx-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white">https://www.googleapis.com/auth/calendar.events.owned</code>
+        para operar eventos do calendário principal e de calendários pertencentes à conta conectada.
       </p>
       <BulletList
         items={[
           'Criar eventos para novos agendamentos.',
           'Atualizar eventos quando um horário, serviço ou barbeiro for alterado.',
           'Excluir eventos relacionados a agendamentos cancelados.',
-          'Ler eventos do calendário principal apenas para verificar disponibilidade e bloquear horários já ocupados.',
+          'Ler eventos do calendário principal da conta conectada apenas para verificar disponibilidade e bloquear horários já ocupados.',
           'Armazenar com segurança tokens de acesso e atualização no backend para manter a integração funcionando até a revogação ou desconexão.',
         ]}
       />
       <p>
-        Os dados recebidos do Google não são vendidos, não são usados para publicidade e não são compartilhados com
-        terceiros para finalidades alheias à operação descrita nesta política.
+        Os dados recebidos do Google não são vendidos, não são usados para publicidade, não são usados para treinar
+        modelos de IA e não são compartilhados com terceiros para finalidades alheias à operação descrita nesta
+        política.
       </p>
       <p>
         O uso de dados recebidos por APIs do Google segue a Política de Dados do Usuário dos Serviços de API do Google,
@@ -238,7 +239,7 @@ const TermsOfService = ({ settings }: { settings: PublicSettings }) => (
       </p>
       <BulletList
         items={[
-          'A permissão é usada para criar, atualizar, excluir e consultar eventos necessários à sincronização dos agendamentos.',
+          'A permissão é usada para criar, atualizar, excluir e consultar eventos necessários à sincronização dos agendamentos no calendário principal da conta conectada.',
           'A desconexão da conta pode ser feita no painel administrativo do sistema ou pela revogação diretamente na conta Google.',
           'Falhas temporárias do Google, expiração de credenciais ou bloqueios externos podem afetar a sincronização sem gerar responsabilidade automática para a barbearia.',
         ]}
@@ -270,6 +271,125 @@ const TermsOfService = ({ settings }: { settings: PublicSettings }) => (
     </Section>
   </>
 );
+
+export const GoogleCalendarPage = () => {
+  const settings = usePublicSettings();
+
+  return (
+    <div className="relative min-h-screen overflow-hidden bg-black pt-24 text-white">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute left-[-8%] top-10 h-72 w-72 rounded-full bg-white/5 blur-[120px]" />
+        <div className="absolute bottom-0 right-[-8%] h-72 w-72 rounded-full bg-sky-500/10 blur-[140px]" />
+      </div>
+
+      <div className="relative mx-auto max-w-5xl px-4 pb-20 sm:px-6 lg:px-8">
+        <div className="rounded-[2rem] border border-white/10 bg-white/[0.03] p-6 md:p-8">
+          <div className="flex flex-wrap items-center gap-3 text-xs font-bold uppercase tracking-[0.24em] text-gray-500">
+            <span className="rounded-full border border-white/10 px-3 py-1">Google OAuth Homepage</span>
+            <span>Atualizado em {LAST_UPDATED}</span>
+          </div>
+
+          <div className="mt-6 flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
+            <div className="max-w-3xl">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-black">
+                <Calendar className="h-7 w-7" />
+              </div>
+              <h1 className="text-3xl font-light tracking-tight text-white md:text-5xl">Integração com Google Calendar</h1>
+              <p className="mt-4 max-w-2xl text-sm leading-7 text-gray-300 md:text-base">
+                Página pública da integração de {settings.business_name} com Google Calendar. Ela descreve, de forma
+                objetiva, por que o sistema solicita acesso ao calendário e como esses dados são tratados.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <a
+                href="/"
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm text-white transition-colors hover:border-white/30 hover:bg-white/5"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Voltar ao início
+              </a>
+              <a
+                href="/politica-de-privacidade"
+                className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-gray-200"
+              >
+                <ShieldCheck className="h-4 w-4" />
+                Política de Privacidade
+              </a>
+              <a
+                href="/termos-de-uso"
+                className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm text-white transition-colors hover:border-white/30 hover:bg-white/5"
+              >
+                <FileText className="h-4 w-4" />
+                Termos de Uso
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-8 grid gap-6">
+          <Section title="O que esta integração faz">
+            <BulletList
+              items={[
+                'Sincroniza agendamentos do sistema com o Google Calendar da conta conectada.',
+                'Cria, atualiza e remove eventos quando um agendamento é criado, alterado ou cancelado.',
+                'Consulta eventos do calendário principal apenas para evitar conflitos de horário.',
+                'Permite que a agenda operacional da barbearia e a agenda da conta conectada permaneçam alinhadas.',
+              ]}
+            />
+          </Section>
+
+          <Section title="Permissão solicitada">
+            <p>
+              O sistema solicita a permissão
+              <code className="mx-1 rounded bg-black/40 px-1.5 py-0.5 text-xs text-white">https://www.googleapis.com/auth/calendar.events.owned</code>
+              durante a conexão com a conta Google.
+            </p>
+            <p>
+              Essa permissão é usada somente para acessar eventos do calendário principal e de calendários pertencentes
+              à própria conta conectada, na medida necessária para sincronização dos agendamentos.
+            </p>
+          </Section>
+
+          <Section title="Como os dados são usados">
+            <BulletList
+              items={[
+                'Os dados do Google Calendar são usados apenas para funcionalidades visíveis ao usuário relacionadas ao agendamento.',
+                'Os dados não são vendidos, não são usados para publicidade e não são usados para treinar modelos de IA.',
+                'Os dados não são compartilhados com terceiros fora dos prestadores essenciais descritos na política de privacidade.',
+              ]}
+            />
+          </Section>
+
+          <Section title="Revogação e suporte">
+            <p>
+              A conta Google pode ser desconectada dentro do painel administrativo do sistema, removendo os tokens
+              armazenados localmente para a integração.
+            </p>
+            <p>
+              O acesso também pode ser revogado diretamente em
+              <a
+                href="https://myaccount.google.com/permissions"
+                target="_blank"
+                rel="noreferrer"
+                className="ml-1 underline underline-offset-4"
+              >
+                myaccount.google.com/permissions
+              </a>
+              .
+            </p>
+            <p>
+              Para detalhes completos sobre coleta, retenção, compartilhamento e direitos do titular, consulte a
+              política de privacidade pública desta aplicação.
+            </p>
+          </Section>
+
+          <ContactBlock settings={settings} />
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const LegalPage = ({ variant }: { variant: LegalVariant }) => {
   const settings = usePublicSettings();
@@ -314,7 +434,7 @@ export const LegalPage = ({ variant }: { variant: LegalVariant }) => {
                 Voltar ao início
               </a>
               <a
-                href={isPrivacy ? '/terms-of-service' : '/privacy-policy'}
+                href={isPrivacy ? '/termos-de-uso' : '/politica-de-privacidade'}
                 className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-gray-200"
               >
                 <ExternalLink className="h-4 w-4" />

@@ -32,6 +32,7 @@ if (!stripe) {
 }
 
 const GOOGLE_TOKEN_CONFIG_KEY = "google_calendar_tokens";
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned";
 
 const getGoogleRedirectUriValue = () =>
   process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "");
@@ -161,10 +162,71 @@ const isBlockedAppointment = (appointment: any) => {
   return !appointment?.customer_id && (serviceType.includes("bloque") || serviceType.includes("indispon"));
 };
 
-const getGoogleEventRequestBody = async (appointment: any) => {
+const GOOGLE_CALENDAR_ID = "primary";
+const GOOGLE_SYNC_SOURCE = "ma-beard-style";
+const GOOGLE_SYNC_TOLERANCE_MS = 5000;
+const GOOGLE_SYNC_LOOKBACK_DAYS = 45;
+const GOOGLE_SYNC_LOOKAHEAD_DAYS = 120;
+const GOOGLE_BACKGROUND_SYNC_INTERVAL_MS = 2 * 60 * 1000;
+const REQUIRED_APPOINTMENT_SYNC_COLUMNS = [
+  "appointment_end",
+  "notes",
+  "sync_origin",
+  "google_calendar_id",
+  "google_last_modified",
+  "sync_last_synced_at",
+] as const;
+
+const getSupabaseHostLabel = () => {
+  if (!supabaseUrl) return null;
+  try {
+    return new URL(supabaseUrl).host;
+  } catch (_error) {
+    return supabaseUrl;
+  }
+};
+
+let googleBackgroundSyncTimer: NodeJS.Timeout | null = null;
+let googleBackgroundSyncRunning = false;
+
+const toValidDate = (value: any) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60 * 1000);
+
+const getAppointmentEndDate = async (appointment: any) => {
+  const start = toValidDate(appointment?.appointment_date);
+  if (!start) return null;
+
+  const explicitEnd = toValidDate(appointment?.appointment_end);
+  if (explicitEnd && explicitEnd.getTime() > start.getTime()) {
+    return explicitEnd;
+  }
+
   const durationMinutes = await getAppointmentDurationMinutes();
+  return addMinutes(start, durationMinutes);
+};
+
+const getGoogleEventPrivateMetadata = (appointment: any) => {
+  const metadata: Record<string, string> = {
+    source: GOOGLE_SYNC_SOURCE,
+    blocked: String(isBlockedAppointment(appointment)),
+  };
+
+  if (appointment?.id) metadata.appointmentId = String(appointment.id);
+  if (appointment?.barber_id) metadata.barberId = String(appointment.barber_id);
+  if (appointment?.customer_id) metadata.customerId = String(appointment.customer_id);
+  if (appointment?.sync_origin) metadata.syncOrigin = String(appointment.sync_origin);
+
+  return metadata;
+};
+
+const getGoogleEventRequestBody = async (appointment: any) => {
   const start = new Date(appointment.appointment_date);
-  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+  const end = (await getAppointmentEndDate(appointment)) || addMinutes(start, await getAppointmentDurationMinutes());
   const blocked = isBlockedAppointment(appointment);
   const barberName = appointment?.barbers?.name || appointment?.barber_name || "Barbeiro";
   const customerName = appointment?.customers?.name || appointment?.customer_name || "Cliente";
@@ -184,6 +246,7 @@ const getGoogleEventRequestBody = async (appointment: any) => {
         `Barbeiro: ${barberName}`,
         customerPhone ? `Telefone: ${customerPhone}` : null,
         `Status: ${appointment.status || "pending"}`,
+        appointment?.notes ? `Observacoes: ${appointment.notes}` : null,
       ];
 
   return {
@@ -191,7 +254,492 @@ const getGoogleEventRequestBody = async (appointment: any) => {
     description: descriptionLines.filter(Boolean).join("\n"),
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
+    extendedProperties: {
+      private: getGoogleEventPrivateMetadata(appointment),
+    },
   };
+};
+
+const getGoogleEventUpdatedIso = (event: any) => {
+  return toValidDate(event?.updated)?.toISOString() || new Date().toISOString();
+};
+
+const updateAppointmentSyncFields = async (
+  appointmentId: number | string,
+  payload: Record<string, any>
+) => {
+  if (!supabase) return;
+
+  const syncLastSyncedAt =
+    payload.sync_last_synced_at || new Date(Date.now() + GOOGLE_SYNC_TOLERANCE_MS).toISOString();
+
+  const { error } = await supabase
+    .from("appointments")
+    .update({
+      ...payload,
+      sync_last_synced_at: syncLastSyncedAt,
+    })
+    .eq("id", appointmentId);
+
+  if (error) throw error;
+};
+
+const getGoogleEventDateTime = (value: any) => {
+  if (!value) return null;
+
+  if (value.dateTime) {
+    return toValidDate(value.dateTime)?.toISOString() || null;
+  }
+
+  if (value.date) {
+    return toValidDate(`${value.date}T00:00:00`)?.toISOString() || null;
+  }
+
+  return null;
+};
+
+const getGoogleEventPrivateField = (event: any, key: string) => {
+  return String(event?.extendedProperties?.private?.[key] || "").trim();
+};
+
+const parseGoogleEventDetails = (event: any) => {
+  const summary = String(event?.summary || "").trim();
+  const description = String(event?.description || "");
+  const normalizedDescription = description.replace(/\r\n/g, "\n");
+
+  const serviceTypeMatch = normalizedDescription.match(/(?:^|\n)Servico:\s*(.+)/i);
+  const notesMatch = normalizedDescription.match(/(?:^|\n)Observacoes:\s*(.+)/i);
+
+  return {
+    summary,
+    description: normalizedDescription.trim(),
+    serviceType: serviceTypeMatch?.[1]?.trim() || null,
+    notes: notesMatch?.[1]?.trim() || null,
+  };
+};
+
+const getDefaultImportedBarberId = async () => {
+  if (!supabase) return null;
+
+  const { data, error } = await supabase.from("barbers").select("id").order("id", { ascending: true });
+  if (error) throw error;
+  if (!data || data.length !== 1) return null;
+  return data[0].id;
+};
+
+const buildImportedAppointmentFromGoogleEvent = async (event: any) => {
+  const startIso = getGoogleEventDateTime(event.start);
+  const endIso = getGoogleEventDateTime(event.end);
+  if (!startIso || !endIso) return null;
+
+  const barberIdRaw = Number(getGoogleEventPrivateField(event, "barberId"));
+  const customerIdRaw = Number(getGoogleEventPrivateField(event, "customerId"));
+  const inferredBarberId = Number.isFinite(barberIdRaw) && barberIdRaw > 0
+    ? barberIdRaw
+    : await getDefaultImportedBarberId();
+  const inferredCustomerId = Number.isFinite(customerIdRaw) && customerIdRaw > 0
+    ? customerIdRaw
+    : null;
+  const googleDetails = parseGoogleEventDetails(event);
+  const summary = googleDetails.summary || "Evento do Google";
+  const description = googleDetails.description;
+  const blockedLabel = summary ? `Bloqueado - ${summary}` : "Bloqueado - Evento do Google";
+
+  return {
+    customer_id: inferredCustomerId,
+    barber_id: inferredBarberId,
+    service_type: googleDetails.serviceType || (inferredCustomerId ? summary : blockedLabel),
+    appointment_date: startIso,
+    appointment_end: endIso,
+    status: event?.status === "cancelled" ? "cancelled" : "confirmed",
+    notes: googleDetails.notes || description || "Importado do Google Calendar.",
+    google_event_id: event.id || null,
+    google_calendar_id: GOOGLE_CALENDAR_ID,
+    google_last_modified: getGoogleEventUpdatedIso(event),
+    sync_last_synced_at: new Date(Date.now() + GOOGLE_SYNC_TOLERANCE_MS).toISOString(),
+    sync_origin: "google",
+  };
+};
+
+const applyGoogleEventToExistingAppointment = async (appointment: any, event: any) => {
+  if (!supabase) return;
+
+  const startIso = getGoogleEventDateTime(event.start);
+  const endIso = getGoogleEventDateTime(event.end);
+  if (!startIso || !endIso) return;
+
+  const payload: Record<string, any> = {
+    appointment_date: startIso,
+    appointment_end: endIso,
+    google_event_id: event.id || appointment.google_event_id || null,
+    google_calendar_id: GOOGLE_CALENDAR_ID,
+    google_last_modified: getGoogleEventUpdatedIso(event),
+    sync_last_synced_at: new Date(Date.now() + GOOGLE_SYNC_TOLERANCE_MS).toISOString(),
+  };
+  const googleDetails = parseGoogleEventDetails(event);
+
+  if (event?.status === "cancelled") {
+    payload.status = "cancelled";
+  } else if (appointment?.status !== "completed") {
+    payload.status = "confirmed";
+  }
+
+  if (googleDetails.serviceType && appointment?.status !== "completed") {
+    payload.service_type = googleDetails.serviceType;
+  }
+
+  if (googleDetails.notes) {
+    payload.notes = googleDetails.notes;
+  }
+
+  if (appointment?.sync_origin === "google" || !appointment?.customer_id) {
+    const imported = await buildImportedAppointmentFromGoogleEvent(event);
+    if (imported) {
+      payload.service_type = imported.service_type;
+      payload.notes = imported.notes;
+      payload.customer_id = imported.customer_id;
+      payload.sync_origin = "google";
+      if (imported.barber_id) payload.barber_id = imported.barber_id;
+    }
+  }
+
+  const { error } = await supabase.from("appointments").update(payload).eq("id", appointment.id);
+  if (error) throw error;
+};
+
+const listGoogleCalendarEventsInRange = async (
+  calendar: any,
+  timeMin: string,
+  timeMax: string
+) => {
+  const events: any[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await calendar.events.list({
+      calendarId: GOOGLE_CALENDAR_ID,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: "startTime",
+      showDeleted: true,
+      maxResults: 250,
+      pageToken,
+    });
+
+    events.push(...(response.data.items || []));
+    pageToken = response.data.nextPageToken || undefined;
+  } while (pageToken);
+
+  return events;
+};
+
+const buildGoogleEventPreview = (events: any[]) => {
+  return (events || [])
+    .filter((event) => event?.status !== "cancelled")
+    .slice(0, 5)
+    .map((event) => {
+      const startIso = getGoogleEventDateTime(event?.start);
+      return {
+        summary: String(event?.summary || "(Sem titulo)").trim() || "(Sem titulo)",
+        start: startIso,
+      };
+    });
+};
+
+const getGoogleSyncRange = (payload?: { start?: string; end?: string }) => {
+  const start = toValidDate(payload?.start);
+  const end = toValidDate(payload?.end);
+
+  if (start && end && end.getTime() > start.getTime()) {
+    return {
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+    };
+  }
+
+  const now = new Date();
+  const timeMin = new Date(now);
+  const timeMax = new Date(now);
+  timeMin.setDate(now.getDate() - GOOGLE_SYNC_LOOKBACK_DAYS);
+  timeMin.setHours(0, 0, 0, 0);
+  timeMax.setDate(now.getDate() + GOOGLE_SYNC_LOOKAHEAD_DAYS);
+  timeMax.setHours(23, 59, 59, 999);
+
+  return {
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+  };
+};
+
+const hasPendingLocalSync = (appointment: any) => {
+  const updatedAt = toValidDate(appointment?.updated_at)?.getTime() || 0;
+  const syncedAt = toValidDate(appointment?.sync_last_synced_at)?.getTime() || 0;
+  const pendingWindow = updatedAt - syncedAt > GOOGLE_SYNC_TOLERANCE_MS;
+
+  if (appointment?.sync_origin === "google" && appointment?.google_event_id && !appointment?.sync_last_synced_at) {
+    return false;
+  }
+
+  if (!appointment?.google_event_id && appointment?.status !== "cancelled") {
+    return true;
+  }
+
+  if (appointment?.status === "cancelled" && appointment?.google_event_id) {
+    return pendingWindow;
+  }
+
+  return pendingWindow;
+};
+
+const getAppointmentsGoogleSyncSchemaStatus = async () => {
+  const supabaseHost = getSupabaseHostLabel();
+  if (!supabase) {
+    return {
+      ready: false,
+      supabaseHost,
+      message: "Supabase nao configurado.",
+      missingColumn: null,
+    };
+  }
+
+  const { error } = await supabase
+    .from("appointments")
+    .select(`id, appointment_date, ${REQUIRED_APPOINTMENT_SYNC_COLUMNS.join(", ")}`)
+    .limit(1);
+
+  if (!error) {
+    return {
+      ready: true,
+      supabaseHost,
+      message: null,
+      missingColumn: null,
+    };
+  }
+
+  const message = String(error?.message || "").toLowerCase();
+  const missingSyncColumn = REQUIRED_APPOINTMENT_SYNC_COLUMNS.find((column) => message.includes(column));
+
+  if (missingSyncColumn) {
+    return {
+      ready: false,
+      supabaseHost,
+      message: `A migration 20260326_appointments_monthly_google_sync.sql ainda nao foi aplicada na base ativa (${supabaseHost || "Supabase"}). Coluna ausente: ${missingSyncColumn}.`,
+      missingColumn: missingSyncColumn,
+    };
+  }
+
+  return {
+    ready: false,
+    supabaseHost,
+    message: String(error?.message || "Falha ao validar o schema da agenda."),
+    missingColumn: null,
+  };
+};
+
+const ensureAppointmentsGoogleSyncSchema = async () => {
+  const status = await getAppointmentsGoogleSyncSchemaStatus();
+  if (status.ready) return;
+  throw new Error(String(status.message || "Schema da agenda mensal indisponivel."));
+};
+
+const syncGoogleCalendarToLocalAppointments = async (payload?: { start?: string; end?: string }) => {
+  if (!supabase) {
+    throw new Error("Supabase nao configurado.");
+  }
+
+  await ensureAppointmentsGoogleSyncSchema();
+
+  const googleClient = await getGoogleCalendarClient({ validateConnection: true });
+  if (!googleClient) {
+    throw new Error("Google Calendar nao conectado.");
+  }
+
+  const { timeMin, timeMax } = getGoogleSyncRange(payload);
+  const issues: string[] = [];
+  const registerIssue = (context: string, error: any) => {
+    const message = String(error?.message || error || "Erro desconhecido.");
+    if (issues.length < 6) {
+      issues.push(`${context}: ${message}`);
+    }
+  };
+
+  const { data: initialAppointments, error: initialError } = await supabase
+    .from("appointments")
+    .select("*")
+    .gte("appointment_date", timeMin)
+    .lte("appointment_date", timeMax)
+    .order("appointment_date", { ascending: true });
+
+  if (initialError) throw initialError;
+
+  const push = { created: 0, updated: 0, deleted: 0, failed: 0 };
+
+  for (const appointment of initialAppointments || []) {
+    if (!hasPendingLocalSync(appointment)) continue;
+
+    try {
+      const result = await syncAppointmentToGoogleCalendar(appointment.id);
+      if (!result.synced) continue;
+
+      if (result.action === "created") push.created++;
+      else if (result.action === "updated") push.updated++;
+      else if (result.action === "deleted") push.deleted++;
+    } catch (error) {
+      push.failed++;
+      registerIssue(`Envio do agendamento ${appointment.id}`, error);
+      console.error(`Erro ao enviar agendamento ${appointment.id} para o Google Calendar:`, error);
+    }
+  }
+
+  const { data: localAppointments, error: localError } = await supabase
+    .from("appointments")
+    .select("*")
+    .gte("appointment_date", timeMin)
+    .lte("appointment_date", timeMax)
+    .order("appointment_date", { ascending: true });
+
+  if (localError) throw localError;
+
+  const localByGoogleEventId = new Map(
+    (localAppointments || [])
+      .filter((appointment: any) => appointment.google_event_id)
+      .map((appointment: any) => [String(appointment.google_event_id), appointment])
+  );
+  const localByAppointmentId = new Map(
+    (localAppointments || []).map((appointment: any) => [String(appointment.id), appointment])
+  );
+
+  const remoteEvents = await listGoogleCalendarEventsInRange(googleClient.calendar, timeMin, timeMax);
+  const remoteEventIds = new Set<string>();
+  const pull = { created: 0, updated: 0, cancelled: 0, failed: 0, skipped: 0 };
+
+  for (const event of remoteEvents) {
+    const eventId = String(event?.id || "");
+    if (!eventId) continue;
+
+    remoteEventIds.add(eventId);
+    const metadataAppointmentId = getGoogleEventPrivateField(event, "appointmentId");
+    const localAppointment =
+      localByGoogleEventId.get(eventId) ||
+      (metadataAppointmentId ? localByAppointmentId.get(metadataAppointmentId) : undefined);
+    const remoteUpdatedAt = toValidDate(event?.updated)?.getTime() || 0;
+
+    try {
+      if (event?.status === "cancelled") {
+        if (localAppointment && localAppointment.status !== "cancelled") {
+          await updateAppointmentSyncFields(localAppointment.id, {
+            status: "cancelled",
+            google_last_modified: getGoogleEventUpdatedIso(event),
+          });
+          pull.cancelled++;
+        } else {
+          pull.skipped++;
+        }
+        continue;
+      }
+
+      if (!localAppointment) {
+        const imported = await buildImportedAppointmentFromGoogleEvent(event);
+        if (!imported) {
+          pull.skipped++;
+          continue;
+        }
+
+        const { error } = await supabase.from("appointments").insert([imported]);
+        if (error) throw error;
+        pull.created++;
+        continue;
+      }
+
+      const localGoogleUpdatedAt = toValidDate(localAppointment.google_last_modified)?.getTime() || 0;
+      if (remoteUpdatedAt - localGoogleUpdatedAt <= GOOGLE_SYNC_TOLERANCE_MS) {
+        pull.skipped++;
+        continue;
+      }
+
+      await applyGoogleEventToExistingAppointment(localAppointment, event);
+      pull.updated++;
+    } catch (error) {
+      pull.failed++;
+      const eventLabel = String(event?.summary || eventId).trim() || eventId;
+      registerIssue(`Importacao do evento ${eventLabel}`, error);
+      console.error(`Erro ao reconciliar evento ${eventId} do Google Calendar:`, error);
+    }
+  }
+
+  for (const appointment of localAppointments || []) {
+    if (!appointment.google_event_id) continue;
+    if (remoteEventIds.has(String(appointment.google_event_id))) continue;
+    if (appointment.status === "cancelled") continue;
+
+    try {
+      await updateAppointmentSyncFields(appointment.id, {
+        status: "cancelled",
+        google_event_id: null,
+      });
+      pull.cancelled++;
+    } catch (error) {
+      pull.failed++;
+      registerIssue(`Cancelamento local do agendamento ${appointment.id}`, error);
+      console.error(`Erro ao cancelar agendamento local ${appointment.id} apos remocao no Google Calendar:`, error);
+    }
+  }
+
+  const count = push.created + push.updated + push.deleted + pull.created + pull.updated + pull.cancelled;
+  const failed = push.failed + pull.failed;
+
+  return {
+    success: true,
+    count,
+    failed,
+    total: remoteEvents.length,
+    calendarId: GOOGLE_CALENDAR_ID,
+    range: { timeMin, timeMax },
+    push,
+    pull,
+    issues,
+    preview: buildGoogleEventPreview(remoteEvents),
+  };
+};
+
+const runGoogleCalendarBackgroundSync = async () => {
+  if (googleBackgroundSyncRunning) return;
+  googleBackgroundSyncRunning = true;
+
+  try {
+    const result = await syncGoogleCalendarToLocalAppointments();
+
+    if (result.count || result.failed) {
+      console.log(
+        `[Google Sync] ciclo automatico concluido. alteracoes=${result.count} falhas=${result.failed}`
+      );
+    }
+  } catch (error: any) {
+    const message = String(error?.message || "");
+    if (
+      message.includes("Google Calendar nao conectado") ||
+      message.includes("Credenciais do Google Calendar") ||
+      message.includes("Supabase nao configurado")
+    ) {
+      return;
+    }
+
+    console.error("[Google Sync] falha no ciclo automatico:", error);
+  } finally {
+    googleBackgroundSyncRunning = false;
+  }
+};
+
+const startGoogleCalendarBackgroundSync = () => {
+  if (process.env.ENABLE_GOOGLE_BACKGROUND_SYNC === "false") return;
+  if (googleBackgroundSyncTimer) return;
+
+  googleBackgroundSyncTimer = setInterval(() => {
+    void runGoogleCalendarBackgroundSync();
+  }, GOOGLE_BACKGROUND_SYNC_INTERVAL_MS);
+
+  void runGoogleCalendarBackgroundSync();
 };
 
 const getAppointmentForGoogleSync = async (appointmentId: number | string) => {
@@ -225,14 +773,17 @@ const syncAppointmentToGoogleCalendar = async (appointmentId: number | string) =
 
     try {
       await googleClient.calendar.events.delete({
-        calendarId: "primary",
+        calendarId: GOOGLE_CALENDAR_ID,
         eventId: appointment.google_event_id,
       });
     } catch (error) {
       if (!isGoogleNotFoundError(error)) throw error;
     }
 
-    await supabase!.from("appointments").update({ google_event_id: null }).eq("id", appointmentId);
+    await updateAppointmentSyncFields(appointmentId, {
+      google_event_id: null,
+      google_last_modified: null,
+    });
     return { synced: true, action: "deleted", eventId: null };
   }
 
@@ -240,10 +791,16 @@ const syncAppointmentToGoogleCalendar = async (appointmentId: number | string) =
 
   if (appointment.google_event_id) {
     try {
-      await googleClient.calendar.events.patch({
-        calendarId: "primary",
+      const event = await googleClient.calendar.events.patch({
+        calendarId: GOOGLE_CALENDAR_ID,
         eventId: appointment.google_event_id,
         requestBody,
+      });
+
+      await updateAppointmentSyncFields(appointmentId, {
+        google_event_id: appointment.google_event_id,
+        google_calendar_id: GOOGLE_CALENDAR_ID,
+        google_last_modified: getGoogleEventUpdatedIso(event.data),
       });
 
       return { synced: true, action: "updated", eventId: appointment.google_event_id };
@@ -253,13 +810,17 @@ const syncAppointmentToGoogleCalendar = async (appointmentId: number | string) =
   }
 
   const event = await googleClient.calendar.events.insert({
-    calendarId: "primary",
+    calendarId: GOOGLE_CALENDAR_ID,
     requestBody,
   });
 
   const eventId = event.data.id || null;
   if (eventId) {
-    await supabase!.from("appointments").update({ google_event_id: eventId }).eq("id", appointmentId);
+    await updateAppointmentSyncFields(appointmentId, {
+      google_event_id: eventId,
+      google_calendar_id: GOOGLE_CALENDAR_ID,
+      google_last_modified: getGoogleEventUpdatedIso(event.data),
+    });
   }
 
   return { synced: true, action: "created", eventId };
@@ -437,6 +998,7 @@ async function startServer() {
 
   app.get("/api/integrations/status", async (req, res) => {
     let googleConnected = false;
+    const appointmentsSync = await getAppointmentsGoogleSyncSchemaStatus();
     try {
       if (await getGoogleCalendarClient({ validateConnection: true })) {
         googleConnected = true;
@@ -454,6 +1016,7 @@ async function startServer() {
         configured: hasGoogleCalendarSecrets(),
         connected: googleConnected,
       },
+      appointmentsSync,
     });
   });
 
@@ -516,7 +1079,10 @@ async function startServer() {
 
   // Appointments CRUD
   app.get("/api/appointments", async (req, res) => {
-    const { data, error } = await supabase
+    const start = typeof req.query.start === "string" ? toValidDate(req.query.start) : null;
+    const end = typeof req.query.end === "string" ? toValidDate(req.query.end) : null;
+
+    let query = supabase
       .from('appointments')
       .select(`
         *,
@@ -524,6 +1090,16 @@ async function startServer() {
         barbers (name)
       `)
       .order('appointment_date', { ascending: true });
+
+    if (start) {
+      query = query.gte('appointment_date', start.toISOString());
+    }
+
+    if (end) {
+      query = query.lte('appointment_date', end.toISOString());
+    }
+
+    const { data, error } = await query;
     
     if (error) return res.status(500).json({ error: error.message });
 
@@ -538,11 +1114,30 @@ async function startServer() {
   });
 
   app.post("/api/appointments", async (req, res) => {
-    const { customer_id, barber_id, service_type, appointment_date, status } = req.body;
+    const { customer_id, barber_id, service_type, appointment_date, appointment_end, status, notes } = req.body;
     try {
+      const start = toValidDate(appointment_date);
+      if (!start) {
+        return res.status(400).json({ error: "Data do agendamento invalida." });
+      }
+
+      const explicitEnd = toValidDate(appointment_end);
+      const end = explicitEnd && explicitEnd.getTime() > start.getTime()
+        ? explicitEnd
+        : addMinutes(start, await getAppointmentDurationMinutes());
+
       const { data, error } = await supabase
         .from('appointments')
-        .insert([{ customer_id, barber_id, service_type, appointment_date, status: status || 'pending' }])
+        .insert([{
+          customer_id: customer_id || null,
+          barber_id: barber_id || null,
+          service_type,
+          appointment_date: start.toISOString(),
+          appointment_end: end.toISOString(),
+          notes: notes || null,
+          status: status || 'pending',
+          sync_origin: 'local',
+        }])
         .select();
       
       if (error) throw error;
@@ -601,7 +1196,7 @@ async function startServer() {
   });
 
   app.put("/api/appointments/:id", async (req, res) => {
-    const { status, appointment_date, service_type, barber_id } = req.body;
+    const { status, appointment_date, appointment_end, service_type, barber_id, customer_id, notes } = req.body;
     const { id } = req.params;
     
     try {
@@ -609,10 +1204,29 @@ async function startServer() {
       if (fetchError) throw fetchError;
 
       const updateData: any = {};
+      const currentStart = toValidDate(oldApt.appointment_date);
+      const currentEnd = toValidDate(oldApt.appointment_end);
+      const nextStart = appointment_date !== undefined ? toValidDate(appointment_date) : currentStart;
+      const nextEndInput = appointment_end !== undefined ? toValidDate(appointment_end) : currentEnd;
+      const fallbackDurationMs =
+        currentStart && currentEnd && currentEnd.getTime() > currentStart.getTime()
+          ? currentEnd.getTime() - currentStart.getTime()
+          : (await getAppointmentDurationMinutes()) * 60 * 1000;
+
       if (status !== undefined) updateData.status = status;
-      if (appointment_date !== undefined) updateData.appointment_date = appointment_date;
       if (service_type !== undefined) updateData.service_type = service_type;
-      if (barber_id !== undefined) updateData.barber_id = barber_id;
+      if (barber_id !== undefined) updateData.barber_id = barber_id || null;
+      if (customer_id !== undefined) updateData.customer_id = customer_id || null;
+      if (notes !== undefined) updateData.notes = notes || null;
+
+      if (nextStart) {
+        const resolvedEnd = nextEndInput && nextEndInput.getTime() > nextStart.getTime()
+          ? nextEndInput
+          : new Date(nextStart.getTime() + fallbackDurationMs);
+
+        updateData.appointment_date = nextStart.toISOString();
+        updateData.appointment_end = resolvedEnd.toISOString();
+      }
 
       const { error } = await supabase
         .from('appointments')
@@ -1365,7 +1979,7 @@ async function startServer() {
 
     const { data: appointments } = await supabase
       .from('appointments')
-      .select('appointment_date')
+      .select('appointment_date, appointment_end')
       .eq('barber_id', barberId)
       .neq('status', 'cancelled')
       .gte('appointment_date', dayStartIso)
@@ -1375,7 +1989,7 @@ async function startServer() {
 
     appointments?.forEach((apt) => {
       const start = new Date(apt.appointment_date);
-      const end = new Date(start.getTime() + slotMinutes * 60000);
+      const end = apt.appointment_end ? new Date(apt.appointment_end) : new Date(start.getTime() + slotMinutes * 60000);
       busyRanges.push({ start, end });
     });
 
@@ -1446,7 +2060,7 @@ async function startServer() {
 
     const url = oauth2Client.generateAuthUrl({
       access_type: "offline",
-      scope: ["https://www.googleapis.com/auth/calendar.events"],
+      scope: [GOOGLE_CALENDAR_SCOPE],
       include_granted_scopes: true,
       prompt: "consent"
     });
@@ -1508,6 +2122,9 @@ async function startServer() {
 
   app.post("/api/calendar/sync", async (req, res) => {
     try {
+      const result = await syncGoogleCalendarToLocalAppointments(req.body || {});
+      return res.json(result);
+
       const googleClient = await getGoogleCalendarClient({ validateConnection: true });
       if (!googleClient) return res.status(401).json({ error: "Google Calendar nao conectado." });
       const calendar: any = googleClient.calendar;
@@ -1566,6 +2183,8 @@ async function startServer() {
       res.status(500).json({ error: error.message });
     }
   });
+
+  startGoogleCalendarBackgroundSync();
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

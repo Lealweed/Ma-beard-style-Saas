@@ -15,7 +15,8 @@ import {
 } from 'recharts';
 import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseConnection } from './lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import { LegalPage } from './legal';
+import { GoogleCalendarPage, LegalPage } from './legal';
+import AppointmentsManagerMonthly from './appointments-monthly';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -83,11 +84,18 @@ interface Subscription {
 
 interface Appointment {
   id: number;
-  customer_id: number;
-  barber_id: number;
+  customer_id: number | null;
+  barber_id: number | null;
   service_type: string;
   appointment_date: string;
+  appointment_end?: string | null;
   status: string;
+  notes?: string | null;
+  sync_origin?: 'local' | 'google';
+  google_event_id?: string | null;
+  google_calendar_id?: string | null;
+  google_last_modified?: string | null;
+  sync_last_synced_at?: string | null;
   customer_name?: string;
   customer_phone?: string;
   barber_name?: string;
@@ -110,7 +118,7 @@ interface Expense {
   date: string;
 }
 
-type AppRoute = 'landing' | 'booking' | 'admin' | 'privacy' | 'terms';
+type AppRoute = 'landing' | 'booking' | 'admin' | 'privacy' | 'terms' | 'google';
 
 // --- Components ---
 
@@ -555,7 +563,7 @@ const AdminDashboard = () => {
               </div>
             )}
             {activeView === 'pos' && <POSSystem />}
-            {activeView === 'appointments' && <AppointmentsManager />}
+            {activeView === 'appointments' && <AppointmentsManagerMonthly />}
             {activeView === 'barbers' && <BarberManager />}
             {activeView === 'inventory' && <InventoryManager />}
             {activeView === 'customers' && <CustomerManager />}
@@ -2688,13 +2696,18 @@ const SettingsView = () => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Falha ao sincronizar com o Google Calendar.');
 
+      const pushCreated = Number(data?.push?.created || 0);
+      const pushUpdated = Number(data?.push?.updated || 0);
+      const pushDeleted = Number(data?.push?.deleted || 0);
+      const pullCreated = Number(data?.pull?.created || 0);
+      const pullUpdated = Number(data?.pull?.updated || 0);
+      const pullCancelled = Number(data?.pull?.cancelled || 0);
       const syncedCount = Number(data.count || 0);
       const failedCount = Number(data.failed || 0);
-      const totalCount = Number(data.total || syncedCount);
 
       const message = syncedCount > 0
-        ? `Sincronizacao concluida. ${syncedCount} de ${totalCount} agendamento(s) enviados ao Google Calendar.${failedCount ? ` ${failedCount} falharam.` : ''}`
-        : 'Nenhum agendamento pendente para sincronizar.';
+        ? `Sincronizacao concluida. Sistema -> Google: ${pushCreated + pushUpdated + pushDeleted}. Google -> Sistema: ${pullCreated + pullUpdated + pullCancelled}.${failedCount ? ` Falhas: ${failedCount}.` : ''}`
+        : 'Nenhuma alteracao pendente para sincronizar.';
 
       setSettingsStatus({ type: 'success', message });
       fetchIntegrationStatus();
@@ -2873,10 +2886,13 @@ const SettingsView = () => {
               VocÃª pode revisar os documentos pÃºblicos exigidos pelo Google e revogar a integraÃ§Ã£o a qualquer momento.
             </p>
             <div className="mt-4 flex flex-wrap gap-3">
-              <a href="/privacy-policy" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white text-black font-bold hover:bg-gray-200 transition-colors">
+              <a href="/google-calendar" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg border border-white/15 text-white font-bold hover:bg-white/10 transition-colors">
+                Página da Integração
+              </a>
+              <a href="/politica-de-privacidade" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white text-black font-bold hover:bg-gray-200 transition-colors">
                 PolÃ­tica de Privacidade
               </a>
-              <a href="/terms-of-service" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white/10 text-white font-bold hover:bg-white/20 transition-colors">
+              <a href="/termos-de-uso" target="_blank" rel="noreferrer" className="px-4 py-2 rounded-lg bg-white/10 text-white font-bold hover:bg-white/20 transition-colors">
                 Termos de Uso
               </a>
             </div>
@@ -3101,8 +3117,9 @@ const APP_TAB_PATHS: Record<AppRoute, string> = {
   landing: '/',
   booking: '/booking',
   admin: '/admin',
-  privacy: '/privacy-policy',
-  terms: '/terms-of-service',
+  privacy: '/politica-de-privacidade',
+  terms: '/termos-de-uso',
+  google: '/google-calendar',
 };
 
 const getInitialTabFromLocation = (): AppRoute => {
@@ -3111,16 +3128,19 @@ const getInitialTabFromLocation = (): AppRoute => {
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
   if (pathname === '/booking') return 'booking';
   if (pathname === '/admin') return 'admin';
+  if (pathname === '/politica-de-privacidade') return 'privacy';
   if (pathname === '/privacy-policy') return 'privacy';
+  if (pathname === '/termos-de-uso') return 'terms';
   if (pathname === '/terms-of-service') return 'terms';
+  if (pathname === '/google-calendar') return 'google';
 
   const tabParam = new URLSearchParams(window.location.search).get('tab');
-  if (tabParam === 'landing' || tabParam === 'booking' || tabParam === 'admin' || tabParam === 'privacy' || tabParam === 'terms') {
+  if (tabParam === 'landing' || tabParam === 'booking' || tabParam === 'admin' || tabParam === 'privacy' || tabParam === 'terms' || tabParam === 'google') {
     return tabParam;
   }
 
   const hash = window.location.hash.replace(/^#/, '');
-  if (hash === 'landing' || hash === 'booking' || hash === 'admin' || hash === 'privacy' || hash === 'terms') {
+  if (hash === 'landing' || hash === 'booking' || hash === 'admin' || hash === 'privacy' || hash === 'terms' || hash === 'google') {
     return hash;
   }
 
@@ -3184,6 +3204,8 @@ export default function App() {
             <motion.div key="privacy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="privacy" /></motion.div>
           ) : activeTab === 'terms' ? (
             <motion.div key="terms" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="terms" /></motion.div>
+          ) : activeTab === 'google' ? (
+            <motion.div key="google" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><GoogleCalendarPage /></motion.div>
           ) : (
             !session ? (
               <motion.div key="auth" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><Auth /></motion.div>
@@ -3217,10 +3239,13 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 text-center">
           <div className="flex items-center justify-center gap-2 mb-4"><Scissors className="w-5 h-5 text-gray-500" /><span className="text-sm font-bold tracking-widest text-gray-500 uppercase">MA Beard Style</span></div>
           <div className="mb-4 flex flex-wrap items-center justify-center gap-4 text-xs text-gray-400">
-            <a href="/privacy-policy" className="transition-colors hover:text-white">
+            <a href="/google-calendar" className="transition-colors hover:text-white">
+              Integração Google
+            </a>
+            <a href="/politica-de-privacidade" className="transition-colors hover:text-white">
               PolÃ­tica de Privacidade
             </a>
-            <a href="/terms-of-service" className="transition-colors hover:text-white">
+            <a href="/termos-de-uso" className="transition-colors hover:text-white">
               Termos de Uso
             </a>
           </div>

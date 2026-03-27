@@ -1,20 +1,47 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# MA Beard Style SaaS
 
-# Run and deploy your AI Studio app
+Sistema de gestao para barbearia com landing page, assinaturas, agenda, dashboard administrativo e integracao com Supabase, Stripe e Google Calendar.
 
-This contains everything you need to run your app locally.
+## Stack
 
-View your app in AI Studio: https://ai.studio/apps/7b855db0-375c-409b-9c10-42d0d45c4a3d
+- Frontend: React + Vite
+- Backend: Express
+- Banco principal: Supabase
+- Deploy principal: Fly.io via Docker
 
-## Run Locally
+## Rodando localmente
 
-**Prerequisites:**  Node.js
+Pre-requisitos:
 
+- Node.js 22+
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Passos:
+
+1. Instale as dependencias com `npm install`
+2. Configure as variaveis de ambiente com base em [.env.example](.env.example)
+3. Rode o servidor de desenvolvimento com `npm run dev`
+
+O app sobe com backend Express e frontend Vite servidos pelo mesmo processo.
+
+## Build e producao
+
+- Gerar frontend: `npm run build`
+- Subir servidor: `npm run start`
+
+Em producao, o Express serve os arquivos de `dist/` e faz fallback SPA para rotas como `/`, `/booking` e `/admin`.
+
+## Variaveis principais
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `STRIPE_SECRET_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `APP_URL`
+
+## Observacoes
+
+- As migracoes SQL ficam em `supabase/migrations/`
+- O diagnostico de schema fica em `supabase/diagnostics/`
+- O projeto nao usa mais SQLite local
