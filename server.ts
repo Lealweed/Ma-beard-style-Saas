@@ -210,6 +210,16 @@ const normalizeAppointmentsWriteError = (error: any) => {
     );
   }
 
+  if (
+    message.includes('null value in column "professional_id"') &&
+    message.includes('relation "appointments"') &&
+    message.includes("not-null constraint")
+  ) {
+    return new Error(
+      "A base ativa ainda exige professional_id na tabela appointments. Execute a migration 20260327_appointments_legacy_professional_id_compat.sql no Supabase e tente novamente."
+    );
+  }
+
   return error instanceof Error ? error : new Error(message || "Falha ao gravar appointments.");
 };
 
