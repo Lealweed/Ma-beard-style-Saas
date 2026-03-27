@@ -197,6 +197,127 @@ const toValidDate = (value: any) => {
 
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60 * 1000);
 
+const appointmentColumnExistsCache = new Map<string, boolean>();
+
+const hasAppointmentColumn = async (column: string) => {
+  if (!supabase) return false;
+
+  const cached = appointmentColumnExistsCache.get(column);
+  if (cached !== undefined) return cached;
+
+  const { error } = await supabase
+    .from("appointments")
+    .select(column)
+    .limit(1);
+
+  if (!error) {
+    appointmentColumnExistsCache.set(column, true);
+    return true;
+  }
+
+  const message = String(error?.message || "").toLowerCase();
+  if (
+    message.includes(column.toLowerCase()) &&
+    (
+      message.includes("does not exist") ||
+      message.includes("could not find the") ||
+      message.includes("schema cache")
+    )
+  ) {
+    appointmentColumnExistsCache.set(column, false);
+    return false;
+  }
+
+  throw error;
+};
+
+const withLegacyAppointmentTimeColumns = async (payload: Record<string, any>) => {
+  if (!payload) return payload;
+
+  const hasAppointmentDate = Object.prototype.hasOwnProperty.call(payload, "appointment_date");
+  const hasAppointmentEnd = Object.prototype.hasOwnProperty.call(payload, "appointment_end");
+
+  if (!hasAppointmentDate && !hasAppointmentEnd) {
+    return payload;
+  }
+
+  const [hasStartsAt, hasEndsAt] = await Promise.all([
+    hasAppointmentDate ? hasAppointmentColumn("starts_at") : Promise.resolve(false),
+    hasAppointmentEnd ? hasAppointmentColumn("ends_at") : Promise.resolve(false),
+  ]);
+
+  return {
+    ...payload,
+    ...(hasStartsAt ? { starts_at: payload.appointment_date } : {}),
+    ...(hasEndsAt ? { ends_at: payload.appointment_end } : {}),
+  };
+};
+
+const normalizeLegacyNumericId = (value: any) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value);
+  return null;
+};
+
+const getAppointmentCustomerLookupId = (appointment: any) =>
+  normalizeLegacyNumericId(appointment?.customer_id ?? appointment?.client_id);
+
+const getAppointmentBarberLookupId = (appointment: any) =>
+  normalizeLegacyNumericId(appointment?.barber_id ?? appointment?.professional_id);
+
+const hydrateAppointmentsDisplayRelations = async (appointments: any[]) => {
+  if (!supabase || !appointments?.length) return appointments || [];
+
+  const customerIds = Array.from(
+    new Set(
+      appointments
+        .map((appointment) => getAppointmentCustomerLookupId(appointment))
+        .filter((id): id is number => id !== null)
+    )
+  );
+
+  const barberIds = Array.from(
+    new Set(
+      appointments
+        .map((appointment) => getAppointmentBarberLookupId(appointment))
+        .filter((id): id is number => id !== null)
+    )
+  );
+
+  const [customersResult, barbersResult] = await Promise.all([
+    customerIds.length
+      ? supabase.from("customers").select("id, name, phone").in("id", customerIds)
+      : Promise.resolve({ data: [], error: null }),
+    barberIds.length
+      ? supabase.from("barbers").select("id, name").in("id", barberIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (customersResult.error) throw customersResult.error;
+  if (barbersResult.error) throw barbersResult.error;
+
+  const customersById = new Map((customersResult.data || []).map((customer: any) => [Number(customer.id), customer]));
+  const barbersById = new Map((barbersResult.data || []).map((barber: any) => [Number(barber.id), barber]));
+
+  return appointments.map((appointment) => {
+    const customer = customersById.get(getAppointmentCustomerLookupId(appointment) || -1) || null;
+    const barber = barbersById.get(getAppointmentBarberLookupId(appointment) || -1) || null;
+
+    return {
+      ...appointment,
+      customers: customer
+        ? { ...(appointment?.customers || {}), name: customer.name, phone: customer.phone }
+        : appointment?.customers || null,
+      barbers: barber
+        ? { ...(appointment?.barbers || {}), name: barber.name }
+        : appointment?.barbers || null,
+      customer_name: appointment?.customer_name || customer?.name || null,
+      customer_phone: appointment?.customer_phone || customer?.phone || null,
+      barber_name: appointment?.barber_name || barber?.name || null,
+    };
+  });
+};
+
 const normalizeAppointmentsWriteError = (error: any) => {
   const message = String(error?.message || error || "");
 
@@ -217,6 +338,36 @@ const normalizeAppointmentsWriteError = (error: any) => {
   ) {
     return new Error(
       "A base ativa ainda exige professional_id na tabela appointments. Execute a migration 20260327_appointments_legacy_professional_id_compat.sql no Supabase e tente novamente."
+    );
+  }
+
+  if (
+    message.includes('null value in column "service_id"') &&
+    message.includes('relation "appointments"') &&
+    message.includes("not-null constraint")
+  ) {
+    return new Error(
+      "A base ativa ainda exige service_id na tabela appointments. Execute a migration 20260327_appointments_legacy_service_id_compat.sql no Supabase e tente novamente."
+    );
+  }
+
+  if (
+    message.includes('null value in column "starts_at"') &&
+    message.includes('relation "appointments"') &&
+    message.includes("not-null constraint")
+  ) {
+    return new Error(
+      "A base ativa ainda exige starts_at na tabela appointments. Execute a migration 20260327_appointments_legacy_time_columns_compat.sql no Supabase e tente novamente."
+    );
+  }
+
+  if (
+    message.includes('null value in column "ends_at"') &&
+    message.includes('relation "appointments"') &&
+    message.includes("not-null constraint")
+  ) {
+    return new Error(
+      "A base ativa ainda exige ends_at na tabela appointments. Execute a migration 20260327_appointments_legacy_time_columns_compat.sql no Supabase e tente novamente."
     );
   }
 
@@ -298,13 +449,14 @@ const updateAppointmentSyncFields = async (
 
   const syncLastSyncedAt =
     payload.sync_last_synced_at || new Date(Date.now() + GOOGLE_SYNC_TOLERANCE_MS).toISOString();
+  const persistedPayload = await withLegacyAppointmentTimeColumns({
+    ...payload,
+    sync_last_synced_at: syncLastSyncedAt,
+  });
 
   const { error } = await supabase
     .from("appointments")
-    .update({
-      ...payload,
-      sync_last_synced_at: syncLastSyncedAt,
-    })
+    .update(persistedPayload)
     .eq("id", appointmentId);
 
   if (error) throw error;
@@ -371,7 +523,7 @@ const buildImportedAppointmentFromGoogleEvent = async (event: any) => {
   const description = googleDetails.description;
   const blockedLabel = summary ? `Bloqueado - ${summary}` : "Bloqueado - Evento do Google";
 
-  return {
+  return await withLegacyAppointmentTimeColumns({
     customer_id: inferredCustomerId,
     barber_id: inferredBarberId,
     service_type: googleDetails.serviceType || (inferredCustomerId ? summary : blockedLabel),
@@ -384,7 +536,7 @@ const buildImportedAppointmentFromGoogleEvent = async (event: any) => {
     google_last_modified: getGoogleEventUpdatedIso(event),
     sync_last_synced_at: new Date(Date.now() + GOOGLE_SYNC_TOLERANCE_MS).toISOString(),
     sync_origin: "google",
-  };
+  });
 };
 
 const applyGoogleEventToExistingAppointment = async (appointment: any, event: any) => {
@@ -429,9 +581,11 @@ const applyGoogleEventToExistingAppointment = async (appointment: any, event: an
     }
   }
 
+  const persistedPayload = await withLegacyAppointmentTimeColumns(payload);
+
   const { error } = await supabase
     .from("appointments")
-    .update(payload)
+    .update(persistedPayload)
     .eq("id", appointment.id);
   if (error) throw normalizeAppointmentsWriteError(error);
 };
@@ -778,12 +932,13 @@ const getAppointmentForGoogleSync = async (appointmentId: number | string) => {
 
   const { data, error } = await supabase
     .from("appointments")
-    .select("*, customers(name, phone), barbers(name)")
+    .select("*")
     .eq("id", appointmentId)
     .single();
 
   if (error) throw error;
-  return data;
+  const [hydrated] = await hydrateAppointmentsDisplayRelations(data ? [data] : []);
+  return hydrated || data;
 };
 
 const syncAppointmentToGoogleCalendar = async (appointmentId: number | string) => {
@@ -1113,35 +1268,28 @@ async function startServer() {
     const start = typeof req.query.start === "string" ? toValidDate(req.query.start) : null;
     const end = typeof req.query.end === "string" ? toValidDate(req.query.end) : null;
 
-    let query = supabase
-      .from('appointments')
-      .select(`
-        *,
-        customers (name, phone),
-        barbers (name)
-      `)
-      .order('appointment_date', { ascending: true });
+    try {
+      let query = supabase
+        .from('appointments')
+        .select('*')
+        .order('appointment_date', { ascending: true });
 
-    if (start) {
-      query = query.gte('appointment_date', start.toISOString());
+      if (start) {
+        query = query.gte('appointment_date', start.toISOString());
+      }
+
+      if (end) {
+        query = query.lte('appointment_date', end.toISOString());
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const formatted = await hydrateAppointmentsDisplayRelations(data || []);
+      res.json(formatted || []);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
     }
-
-    if (end) {
-      query = query.lte('appointment_date', end.toISOString());
-    }
-
-    const { data, error } = await query;
-    
-    if (error) return res.status(500).json({ error: error.message });
-
-    const formatted = data?.map(a => ({
-      ...a,
-      customer_name: a.customers?.name,
-      customer_phone: a.customers?.phone,
-      barber_name: a.barbers?.name
-    }));
-    
-    res.json(formatted || []);
   });
 
   app.post("/api/appointments", async (req, res) => {
@@ -1157,18 +1305,20 @@ async function startServer() {
         ? explicitEnd
         : addMinutes(start, await getAppointmentDurationMinutes());
 
+      const insertPayload = await withLegacyAppointmentTimeColumns({
+        customer_id: customer_id || null,
+        barber_id: barber_id || null,
+        service_type,
+        appointment_date: start.toISOString(),
+        appointment_end: end.toISOString(),
+        notes: notes || null,
+        status: status || 'pending',
+        sync_origin: 'local',
+      });
+
       const { data, error } = await supabase
         .from('appointments')
-        .insert([{
-          customer_id: customer_id || null,
-          barber_id: barber_id || null,
-          service_type,
-          appointment_date: start.toISOString(),
-          appointment_end: end.toISOString(),
-          notes: notes || null,
-          status: status || 'pending',
-          sync_origin: 'local',
-        }])
+        .insert([insertPayload])
         .select();
       
       if (error) throw normalizeAppointmentsWriteError(error);
@@ -1259,9 +1409,11 @@ async function startServer() {
         updateData.appointment_end = resolvedEnd.toISOString();
       }
 
+      const persistedUpdateData = await withLegacyAppointmentTimeColumns(updateData);
+
       const { error } = await supabase
         .from('appointments')
-        .update(updateData)
+        .update(persistedUpdateData)
         .eq('id', id);
       
       if (error) throw normalizeAppointmentsWriteError(error);
