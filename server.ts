@@ -197,6 +197,22 @@ const toValidDate = (value: any) => {
 
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60 * 1000);
 
+const normalizeAppointmentsWriteError = (error: any) => {
+  const message = String(error?.message || error || "");
+
+  if (
+    message.includes('null value in column "client_id"') &&
+    message.includes('relation "appointments"') &&
+    message.includes("not-null constraint")
+  ) {
+    return new Error(
+      "A base ativa ainda exige client_id na tabela appointments. Execute a migration 20260327_appointments_legacy_client_id_compat.sql no Supabase e tente novamente."
+    );
+  }
+
+  return error instanceof Error ? error : new Error(message || "Falha ao gravar appointments.");
+};
+
 const getAppointmentEndDate = async (appointment: any) => {
   const start = toValidDate(appointment?.appointment_date);
   if (!start) return null;
@@ -403,8 +419,11 @@ const applyGoogleEventToExistingAppointment = async (appointment: any, event: an
     }
   }
 
-  const { error } = await supabase.from("appointments").update(payload).eq("id", appointment.id);
-  if (error) throw error;
+  const { error } = await supabase
+    .from("appointments")
+    .update(payload)
+    .eq("id", appointment.id);
+  if (error) throw normalizeAppointmentsWriteError(error);
 };
 
 const listGoogleCalendarEventsInRange = async (
@@ -646,8 +665,10 @@ const syncGoogleCalendarToLocalAppointments = async (payload?: { start?: string;
           continue;
         }
 
-        const { error } = await supabase.from("appointments").insert([imported]);
-        if (error) throw error;
+        const { error } = await supabase
+          .from("appointments")
+          .insert([imported]);
+        if (error) throw normalizeAppointmentsWriteError(error);
         pull.created++;
         continue;
       }
@@ -1140,7 +1161,7 @@ async function startServer() {
         }])
         .select();
       
-      if (error) throw error;
+      if (error) throw normalizeAppointmentsWriteError(error);
       
       // Try to sync to Google Calendar immediately if connected
       try {
@@ -1233,7 +1254,7 @@ async function startServer() {
         .update(updateData)
         .eq('id', id);
       
-      if (error) throw error;
+      if (error) throw normalizeAppointmentsWriteError(error);
 
       // Sync update to Google Calendar
       if (oldApt) {
