@@ -1,9 +1,10 @@
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import crypto from "crypto";
 import path from "path";
 
 dotenv.config();
@@ -17,6 +18,7 @@ const getEnvValue = (...keys: string[]) => {
 };
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
 const stripe = stripeSecretKey
   ? new Stripe(stripeSecretKey, {
       apiVersion: "2025-01-27.acacia" as any,
@@ -33,6 +35,9 @@ if (!stripe) {
 
 const GOOGLE_TOKEN_CONFIG_KEY = "google_calendar_tokens";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned";
+const GOOGLE_AUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const PUBLIC_BOOKING_PROOF_TTL_MS = 15 * 60 * 1000;
+const SIGNING_SECRET = getEnvValue("APP_SECRET", "BOOKING_PROOF_SECRET", "SUPABASE_ANON_KEY") || "ma-beard-style-dev-secret";
 
 const getGoogleRedirectUriValue = () =>
   process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "");
@@ -1036,11 +1041,359 @@ const DEFAULT_SYSTEM_SETTINGS: SystemSettingsPayload = {
   timezone: "America/Sao_Paulo",
 };
 
+const isAdminRole = (role: string) => ["admin", "owner", "superadmin"].includes(role);
+
+const getUserRole = (user: any) =>
+  String(user?.app_metadata?.role || user?.user_metadata?.role || "").trim().toLowerCase();
+
+const signEphemeralToken = (type: string, payload: Record<string, any>, ttlMs: number) => {
+  const expiresAt = Date.now() + ttlMs;
+  const encodedPayload = Buffer.from(JSON.stringify({ type, expiresAt, ...payload }), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", SIGNING_SECRET).update(encodedPayload).digest("base64url");
+  return `${encodedPayload}.${signature}`;
+};
+
+const verifyEphemeralToken = (token: string, expectedType: string) => {
+  const [encodedPayload, signature] = String(token || "").split(".");
+  if (!encodedPayload || !signature) return null;
+
+  const expectedSignature = crypto.createHmac("sha256", SIGNING_SECRET).update(encodedPayload).digest("base64url");
+  if (signature !== expectedSignature) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (payload?.type !== expectedType) return null;
+    if (!payload?.expiresAt || Date.now() > Number(payload.expiresAt)) return null;
+    return payload;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const createGoogleAuthStateToken = (user: any) =>
+  signEphemeralToken(
+    "google_oauth_state",
+    { userId: String(user?.id || ""), role: getUserRole(user) || "" },
+    GOOGLE_AUTH_STATE_TTL_MS
+  );
+
+const verifyGoogleAuthStateToken = (token: string) =>
+  verifyEphemeralToken(token, "google_oauth_state");
+
+const createPublicBookingProofToken = (email: string) =>
+  signEphemeralToken("public_booking_proof", { email: String(email || "").trim().toLowerCase() }, PUBLIC_BOOKING_PROOF_TTL_MS);
+
+const verifyPublicBookingProofToken = (token: string) =>
+  verifyEphemeralToken(token, "public_booking_proof");
+
+const getBearerToken = (req: Request) => {
+  const authHeader = String(req.headers.authorization || "");
+  if (!authHeader.toLowerCase().startsWith("bearer ")) return "";
+  return authHeader.slice(7).trim();
+};
+
+const getAuthenticatedSupabaseUser = async (req: Request) => {
+  if (!supabase) return null;
+
+  const token = getBearerToken(req);
+  if (!token) return null;
+
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error) throw error;
+  return data.user || null;
+};
+
+const requireAdminApi = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await getAuthenticatedSupabaseUser(req);
+    if (!user) {
+      return res.status(401).json({ error: "Sessao administrativa obrigatoria." });
+    }
+
+    const role = getUserRole(user);
+    if (!isAdminRole(role)) {
+      return res.status(403).json({ error: "Sua conta nao possui permissao administrativa." });
+    }
+
+    (req as any).authUser = user;
+    next();
+  } catch (error: any) {
+    res.status(401).json({ error: error?.message || "Falha ao validar a sessao administrativa." });
+  }
+};
+
+const isPublicApiRequest = (req: Request) => {
+  const method = req.method.toUpperCase();
+  const path = `${req.baseUrl || ""}${req.path}`;
+
+  return (
+    (method === "GET" && path === "/api/plans") ||
+    (method === "POST" && path === "/api/create-checkout-session") ||
+    (method === "POST" && path === "/api/webhook") ||
+    path === "/api/auth/google/callback" ||
+    path === "/api/public/barbers" ||
+    path === "/api/public/services" ||
+    path === "/api/public/check-subscription" ||
+    path === "/api/public/available-slots" ||
+    path === "/api/public/book-appointment"
+  );
+};
+
+const parseTimeToMinutes = (time: string, fallback: number) => {
+  const [hStr, mStr] = String(time || "").split(":");
+  const h = Number(hStr);
+  const m = Number(mStr || "0");
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return fallback;
+  return h * 60 + m;
+};
+
+const getBookingAvailabilityConfig = async () => {
+  if (!supabase) {
+    return {
+      workingStart: 9 * 60,
+      workingEnd: 18 * 60,
+      slotStepMinutes: 60,
+    };
+  }
+
+  const { data: cfgRows } = await supabase
+    .from("config")
+    .select("key, value")
+    .in("key", ["working_hours_start", "working_hours_end", "booking_slot_minutes"]);
+
+  const cfg: Record<string, string> = {};
+  cfgRows?.forEach((row) => {
+    cfg[row.key] = row.value;
+  });
+
+  const workingStart = parseTimeToMinutes(cfg.working_hours_start || "09:00", 9 * 60);
+  const workingEnd = parseTimeToMinutes(cfg.working_hours_end || "18:00", 18 * 60);
+  const slotStepMinutes = Math.max(15, Number(cfg.booking_slot_minutes || "60") || 60);
+
+  return { workingStart, workingEnd, slotStepMinutes };
+};
+
+const getBusyRangesForBarberDate = async (
+  barberId: string | number,
+  date: string,
+  fallbackDurationMinutes: number
+) => {
+  if (!supabase) return [];
+
+  const dayStartIso = `${date}T00:00:00`;
+  const dayEndIso = `${date}T23:59:59`;
+
+  const { data: appointments } = await supabase
+    .from("appointments")
+    .select("appointment_date, appointment_end")
+    .eq("barber_id", barberId)
+    .neq("status", "cancelled")
+    .gte("appointment_date", dayStartIso)
+    .lte("appointment_date", dayEndIso);
+
+  const busyRanges: Array<{ start: Date; end: Date }> = [];
+
+  appointments?.forEach((appointment) => {
+    const start = new Date(appointment.appointment_date);
+    const end = appointment.appointment_end
+      ? new Date(appointment.appointment_end)
+      : new Date(start.getTime() + fallbackDurationMinutes * 60000);
+    busyRanges.push({ start, end });
+  });
+
+  try {
+    const googleClient = await getGoogleCalendarClient();
+    if (googleClient) {
+      const gcalEvents = await googleClient.calendar.events.list({
+        calendarId: GOOGLE_CALENDAR_ID,
+        timeMin: new Date(`${date}T00:00:00`).toISOString(),
+        timeMax: new Date(`${date}T23:59:59`).toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 250,
+      });
+
+      gcalEvents.data.items?.forEach((event) => {
+        if (!event.start?.dateTime || !event.end?.dateTime) return;
+        busyRanges.push({
+          start: new Date(event.start.dateTime),
+          end: new Date(event.end.dateTime),
+        });
+      });
+    }
+  } catch (error) {
+    console.warn("Falha ao buscar eventos do Google Calendar para disponibilidade:", error);
+  }
+
+  return busyRanges;
+};
+
+const computeAvailableSlotsForBarberDate = async ({
+  barberId,
+  date,
+  durationMinutes,
+}: {
+  barberId: string | number;
+  date: string;
+  durationMinutes?: number;
+}) => {
+  const { workingStart, workingEnd, slotStepMinutes } = await getBookingAvailabilityConfig();
+  const serviceDurationMinutes = Math.max(15, Number(durationMinutes || slotStepMinutes) || slotStepMinutes);
+
+  const slots: string[] = [];
+  for (let minute = workingStart; minute + serviceDurationMinutes <= workingEnd; minute += slotStepMinutes) {
+    const h = Math.floor(minute / 60);
+    const m = minute % 60;
+    slots.push(`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+  }
+
+  const busyRanges = await getBusyRangesForBarberDate(barberId, date, serviceDurationMinutes);
+
+  return slots.filter((slot) => {
+    const slotStart = new Date(`${date}T${slot}:00`);
+    const slotEnd = new Date(slotStart.getTime() + serviceDurationMinutes * 60000);
+    return !busyRanges.some(({ start, end }) => slotStart < end && slotEnd > start);
+  });
+};
+
+const findOrCreateCustomer = async ({
+  name,
+  email,
+  phone,
+  cpf,
+}: {
+  name: string;
+  email?: string;
+  phone?: string;
+  cpf?: string;
+}) => {
+  if (!supabase) {
+    throw new Error("Supabase nao configurado.");
+  }
+
+  const safeName = String(name || "").trim();
+  const safeEmail = String(email || "").trim();
+  const safePhone = String(phone || "").trim();
+  const safeCpf = String(cpf || "").trim();
+
+  if (!safeName) {
+    throw new Error("Nome e obrigatorio.");
+  }
+
+  if (safePhone || safeEmail) {
+    let query = supabase.from("customers").select("id");
+    if (safePhone && safeEmail) {
+      query = query.or(`phone.eq.${safePhone},email.eq.${safeEmail}`);
+    } else if (safePhone) {
+      query = query.eq("phone", safePhone);
+    } else {
+      query = query.eq("email", safeEmail);
+    }
+
+    const { data: existing, error: existingError } = await query.maybeSingle();
+    if (existingError) throw existingError;
+    if (existing?.id) return existing.id;
+  }
+
+  const { data, error } = await supabase
+    .from("customers")
+    .insert([{ name: safeName, email: safeEmail || null, phone: safePhone || null, cpf: safeCpf || null }])
+    .select();
+
+  if (error) {
+    if (error.code === "23505") {
+      const { data: existing } = await supabase
+        .from("customers")
+        .select("id")
+        .or(`phone.eq.${safePhone},email.eq.${safeEmail}`)
+        .maybeSingle();
+      if (existing?.id) return existing.id;
+    }
+
+    throw error;
+  }
+
+  const customerId = data?.[0]?.id;
+  if (!customerId) {
+    throw new Error("Nao foi possivel registrar o cliente.");
+  }
+
+  return customerId;
+};
+
+const resolveActiveSubscriptionEmail = async (rawIdentifier: string) => {
+  if (!supabase) {
+    throw new Error("Supabase nao configurado.");
+  }
+
+  const normalizedIdentifier = String(rawIdentifier || "").trim();
+  if (!normalizedIdentifier) {
+    throw new Error("Informe um e-mail ou CPF.");
+  }
+
+  const normalizedEmail = normalizedIdentifier.toLowerCase();
+  const cpfDigits = normalizedIdentifier.replace(/\D/g, "");
+  const looksLikeEmail = normalizedIdentifier.includes("@");
+  let candidateEmails: string[] = [];
+
+  if (looksLikeEmail) {
+    candidateEmails = [normalizedEmail];
+  } else {
+    const cpfVariants = Array.from(new Set([
+      normalizedIdentifier,
+      cpfDigits,
+      cpfDigits.length === 11
+        ? `${cpfDigits.slice(0, 3)}.${cpfDigits.slice(3, 6)}.${cpfDigits.slice(6, 9)}-${cpfDigits.slice(9)}`
+        : "",
+    ].filter(Boolean)));
+
+    if (cpfVariants.length === 0) {
+      throw new Error("CPF invalido.");
+    }
+
+    const { data: customers, error: customerError } = await supabase
+      .from("customers")
+      .select("email")
+      .in("cpf", cpfVariants);
+
+    if (customerError) throw customerError;
+
+    candidateEmails = (customers || [])
+      .map((customer: any) => String(customer.email || "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  if (candidateEmails.length === 0) {
+    return null;
+  }
+
+  for (const email of candidateEmails) {
+    const { data: subscriptions, error: subError } = await supabase
+      .from("subscriptions")
+      .select("customer_email, status")
+      .eq("status", "active")
+      .ilike("customer_email", email)
+      .limit(1);
+
+    if (subError) throw subError;
+
+    if (subscriptions && subscriptions.length > 0) {
+      return String(subscriptions[0].customer_email || email).trim().toLowerCase();
+    }
+  }
+
+  return null;
+};
+
 async function startServer() {
   const app = express();
   const PORT = 3000; // Forçamos a porta 3000 para coincidir com o fly.toml
 
-  app.use(express.json());
+  app.use(express.json({
+    verify: (req, _res, buffer) => {
+      (req as any).rawBody = buffer;
+    },
+  }));
 
   app.get("/app-config.js", (_req, res) => {
     res.type("application/javascript");
@@ -1051,6 +1404,14 @@ async function startServer() {
         supabaseAnonKey: supabaseKey,
       })};`
     );
+  });
+
+  app.use("/api", (req, res, next) => {
+    if (isPublicApiRequest(req)) {
+      return next();
+    }
+
+    void requireAdminApi(req, res, next);
   });
 
   // API Routes
@@ -1768,15 +2129,15 @@ async function startServer() {
   });
 
   app.post("/api/services-catalog", async (req, res) => {
-    const { name, price, duration_minutes, description } = req.body;
-    const { data, error } = await supabase.from('services_catalog').insert([{ name, price, duration_minutes: duration_minutes || 60, description }]).select();
+    const { name, price, duration_minutes, description, category } = req.body;
+    const { data, error } = await supabase.from('services_catalog').insert([{ name, price, duration_minutes: duration_minutes || 60, description, category: category || 'Avulso' }]).select();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data[0]);
   });
 
   app.put("/api/services-catalog/:id", async (req, res) => {
-    const { name, price, duration_minutes, description, active } = req.body;
-    const { error } = await supabase.from('services_catalog').update({ name, price, duration_minutes, description, active }).eq('id', req.params.id);
+    const { name, price, duration_minutes, description, active, category } = req.body;
+    const { error } = await supabase.from('services_catalog').update({ name, price, duration_minutes, description, active, category: category || 'Avulso' }).eq('id', req.params.id);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
@@ -1925,7 +2286,7 @@ async function startServer() {
         payment_method_types: ["card"],
         line_items: [lineItem],
         mode: "subscription",
-        success_url: `${appUrl}/success?session_id={CHECKOUT_SESSION_ID}`,
+        success_url: `${appUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${appUrl}/`,
         customer_email: email,
         metadata: {
@@ -1951,18 +2312,75 @@ async function startServer() {
   });
 
   app.post("/api/webhook", async (req, res) => {
-    const event = req.body;
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-      await supabase.from('subscriptions').insert([{
-        id: session.id,
-        customer_email: session.customer_email,
-        plan_id: session.metadata?.plan_id || "",
-        status: "active",
-        stripe_subscription_id: session.subscription
-      }]);
+    if (!stripe) {
+      return res.status(503).json({ error: "Stripe nao configurada no servidor." });
     }
-    res.json({ received: true });
+
+    if (!stripeWebhookSecret) {
+      return res.status(503).json({ error: "STRIPE_WEBHOOK_SECRET nao configurado no servidor." });
+    }
+
+    const signature = String(req.headers["stripe-signature"] || "");
+    if (!signature) {
+      return res.status(400).json({ error: "Cabecalho stripe-signature ausente." });
+    }
+
+    let event: Stripe.Event;
+    try {
+      const rawBody = Buffer.isBuffer((req as any).rawBody)
+        ? (req as any).rawBody
+        : Buffer.from(JSON.stringify(req.body || {}));
+      event = stripe.webhooks.constructEvent(rawBody, signature, stripeWebhookSecret);
+    } catch (error: any) {
+      return res.status(400).json({ error: `Webhook Stripe invalido: ${error.message}` });
+    }
+
+    try {
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object as Stripe.Checkout.Session;
+        await supabase.from("subscriptions").upsert([{
+          id: session.id,
+          customer_email: session.customer_email,
+          plan_id: session.metadata?.plan_id || "",
+          status: "active",
+          stripe_subscription_id: session.subscription,
+        }], { onConflict: "id" });
+      }
+
+      if (event.type === "invoice.paid") {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId = String((invoice as any).subscription || "");
+        if (subscriptionId) {
+          await supabase
+            .from("subscriptions")
+            .update({ status: "active" })
+            .eq("stripe_subscription_id", subscriptionId);
+        }
+      }
+
+      if (event.type === "invoice.payment_failed") {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId = String((invoice as any).subscription || "");
+        if (subscriptionId) {
+          await supabase
+            .from("subscriptions")
+            .update({ status: "past_due" })
+            .eq("stripe_subscription_id", subscriptionId);
+        }
+      }
+
+      if (event.type === "customer.subscription.deleted") {
+        const subscription = event.data.object as Stripe.Subscription;
+        await supabase
+          .from("subscriptions")
+          .update({ status: "cancelled" })
+          .eq("stripe_subscription_id", subscription.id);
+      }
+
+      res.json({ received: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Falha ao processar webhook Stripe." });
+    }
   });
 
   // --- Advanced Financial Routes ---
@@ -2048,6 +2466,131 @@ async function startServer() {
   app.get("/api/public/services", async (req, res) => {
     const { data } = await supabase.from('services_catalog').select('*').eq('active', true).order('name');
     res.json(data || []);
+  });
+
+  app.post("/api/public/check-subscription", async (req, res) => {
+    try {
+      const activeEmail = await resolveActiveSubscriptionEmail(String(req.body?.identifier || ""));
+      if (!activeEmail) {
+        return res.json({ active: false });
+      }
+
+      return res.json({
+        active: true,
+        email: activeEmail,
+        bookingProof: createPublicBookingProofToken(activeEmail),
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Erro ao validar assinatura.' });
+    }
+  });
+
+  app.get("/api/public/available-slots", async (req, res) => {
+    const { barberId, date } = req.query;
+
+    if (!barberId || !date) {
+      return res.status(400).json({ error: 'Parametros barberId e date sao obrigatorios.' });
+    }
+
+    try {
+      const durationMinutes = Math.max(15, Number(req.query.durationMinutes || req.query.duration || 0) || 0);
+      const available = await computeAvailableSlotsForBarberDate({
+        barberId: String(barberId),
+        date: String(date),
+        durationMinutes: durationMinutes || undefined,
+      });
+      return res.json(available);
+    } catch (_error) {
+      return res.status(500).json({ error: 'Falha ao calcular os horarios disponiveis.' });
+    }
+  });
+
+  app.post("/api/public/book-appointment", async (req, res) => {
+    const bookingProof = String(req.body?.bookingProof || '').trim();
+    const serviceId = Number(req.body?.serviceId || 0);
+    const barberId = Number(req.body?.barberId || 0);
+    const date = String(req.body?.date || '').trim();
+    const time = String(req.body?.time || '').trim();
+    const clientData = req.body?.clientData || {};
+
+    if (!bookingProof) {
+      return res.status(401).json({ error: 'Valide sua assinatura antes de concluir o agendamento.' });
+    }
+
+    const proofPayload = verifyPublicBookingProofToken(bookingProof);
+    if (!proofPayload?.email) {
+      return res.status(401).json({ error: 'A validacao da assinatura expirou. Refaça a identificacao.' });
+    }
+
+    if (!serviceId || !barberId || !date || !time) {
+      return res.status(400).json({ error: 'Servico, barbeiro, data e horario sao obrigatorios.' });
+    }
+
+    try {
+      const activeEmail = await resolveActiveSubscriptionEmail(String(proofPayload.email));
+      if (!activeEmail || activeEmail !== String(proofPayload.email)) {
+        return res.status(403).json({ error: 'Sua assinatura nao esta mais ativa para este agendamento.' });
+      }
+
+      const { data: service, error: serviceError } = await supabase
+        .from('services_catalog')
+        .select('id, name, duration_minutes, active')
+        .eq('id', serviceId)
+        .single();
+
+      if (serviceError || !service || service.active === false) {
+        return res.status(404).json({ error: 'Servico nao encontrado ou indisponivel.' });
+      }
+
+      const availableSlots = await computeAvailableSlotsForBarberDate({
+        barberId,
+        date,
+        durationMinutes: Number(service.duration_minutes || 60),
+      });
+
+      if (!availableSlots.includes(time)) {
+        return res.status(409).json({ error: 'Este horario acabou de ser ocupado. Escolha outro horario.' });
+      }
+
+      const start = toValidDate(`${date}T${time}:00`);
+      if (!start) {
+        return res.status(400).json({ error: 'Data do agendamento invalida.' });
+      }
+
+      const end = addMinutes(start, Math.max(15, Number(service.duration_minutes || 60) || 60));
+      const customerId = await findOrCreateCustomer({
+        name: String(clientData.name || '').trim(),
+        email: activeEmail,
+        phone: String(clientData.phone || '').trim(),
+      });
+
+      const insertPayload = await withLegacyAppointmentTimeColumns({
+        customer_id: customerId,
+        barber_id: barberId,
+        service_type: String(service.name || '').trim(),
+        appointment_date: start.toISOString(),
+        appointment_end: end.toISOString(),
+        status: 'pending',
+        sync_origin: 'local',
+      });
+
+      const { data, error } = await supabase
+        .from('appointments')
+        .insert([insertPayload])
+        .select();
+
+      if (error) throw normalizeAppointmentsWriteError(error);
+
+      try {
+        await syncAppointmentToGoogleCalendar(data?.[0]?.id);
+      } catch (syncError) {
+        console.error('Erro ao sincronizar agendamento publico com Google:', syncError);
+      }
+
+      return res.json({ id: data?.[0]?.id || null, success: true });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Falha ao concluir o agendamento publico.' });
+    }
   });
 
   app.post("/api/public/check-subscription", async (req, res) => {
@@ -2241,19 +2784,30 @@ async function startServer() {
       return res.status(400).json({ error: "Defina APP_URL ou GOOGLE_REDIRECT_URI para conectar o Google Calendar." });
     }
 
+    const authUser = (req as any).authUser;
+    if (!authUser || !isAdminRole(getUserRole(authUser))) {
+      return res.status(401).json({ error: "Sessao administrativa obrigatoria para conectar o Google Calendar." });
+    }
+
     const url = oauth2Client.generateAuthUrl({
       access_type: "offline",
       scope: [GOOGLE_CALENDAR_SCOPE],
       include_granted_scopes: true,
-      prompt: "consent"
+      prompt: "consent",
+      state: createGoogleAuthStateToken(authUser),
     });
     res.json({ url });
   });
 
   app.get("/api/auth/google/callback", async (req, res) => {
-    const { code } = req.query;
+    const { code, state } = req.query;
     if (typeof code !== "string" || !code) {
       return res.status(400).send("Codigo de autorizacao do Google nao informado.");
+    }
+
+    const statePayload = typeof state === "string" ? verifyGoogleAuthStateToken(state) : null;
+    if (!statePayload) {
+      return res.status(400).send("Estado da autenticacao Google invalido ou expirado.");
     }
 
     try {

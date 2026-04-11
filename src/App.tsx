@@ -17,6 +17,7 @@ import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseCon
 import { Session } from '@supabase/supabase-js';
 import { GoogleCalendarPage, LegalPage } from './legal';
 import AppointmentsManagerMonthly from './appointments-monthly';
+import BookingPage from './pages/booking/index';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -108,6 +109,7 @@ interface ServiceCatalogItem {
   duration_minutes: number;
   description?: string;
   active?: boolean;
+  category?: string;
 }
 
 interface Expense {
@@ -1710,7 +1712,7 @@ const ServicesCatalogManager = () => {
   return (
     <div className="space-y-8">
       <div className="flex justify-end">
-        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
+        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '', category: 'Avulso' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
       </div>
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
@@ -1736,7 +1738,13 @@ const ServicesCatalogManager = () => {
               <input placeholder="Nome do Serviço" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <div className="grid grid-cols-2 gap-4">
                 <input type="number" placeholder="Preço (R$)" value={editing.price || ''} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-                <input type="number" placeholder="Duração (min)" value={editing.duration_minutes || 60} onChange={e => setEditing({...editing, duration_minutes: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+                                <input type="number" placeholder="Duração (min)" value={editing.duration_minutes || 60} onChange={e => setEditing({...editing, duration_minutes: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              </div>
+              <div className="grid grid-cols-1">
+                <select value={editing.category || 'Avulso'} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm text-gray-400">
+                  <option value="Avulso">Avulso</option>
+                  <option value="Pacote">Pacote</option>
+                </select>
               </div>
               <textarea placeholder="Descrição (opcional)" value={editing.description || ''} onChange={e => setEditing({...editing, description: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm h-20 resize-none" />
               <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
@@ -1917,6 +1925,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
   const [selectedTime, setSelectedTime] = useState('');
   const [clientData, setClientData] = useState({ name: '', phone: '', email: '' });
   const [identifier, setIdentifier] = useState('');
+  const [bookingProof, setBookingProof] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [checkingSubscription, setCheckingSubscription] = useState(false);
@@ -1929,28 +1938,39 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
   useEffect(() => {
     if (selectedBarber && selectedDate) {
-      fetch(`/api/public/available-slots?barberId=${selectedBarber.id}&date=${selectedDate}`).then(r => r.json()).then(d => setSlots(Array.isArray(d) ? d : []));
+      const params = new URLSearchParams({
+        barberId: String(selectedBarber.id),
+        date: selectedDate,
+      });
+
+      if (selectedService?.duration_minutes) {
+        params.set('durationMinutes', String(selectedService.duration_minutes));
+      }
+
+      fetch(`/api/public/available-slots?${params.toString()}`).then(r => r.json()).then(d => setSlots(Array.isArray(d) ? d : []));
     }
-  }, [selectedBarber, selectedDate]);
+  }, [selectedBarber, selectedDate, selectedService?.duration_minutes]);
 
   const handleConfirm = async () => {
-    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone || !clientData.email) return;
+    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone || !clientData.email || !bookingProof) return;
     setLoading(true);
     try {
-      const custRes = await fetch('/api/customers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clientData) });
-      const custData = await custRes.json();
-      if (!custData.id) { alert('Erro ao registrar dados. Tente novamente.'); return; }
+      const bookingRes = await fetch('/api/public/book-appointment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bookingProof,
+          serviceId: selectedService.id,
+          barberId: selectedBarber.id,
+          date: selectedDate,
+          time: selectedTime,
+          clientData,
+        })
+      });
+      const bookingData = await bookingRes.json().catch(() => ({}));
 
-      const aptRes = await fetch('/api/appointments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        customer_id: custData.id,
-        barber_id: selectedBarber.id,
-        service_type: selectedService.name,
-        appointment_date: `${selectedDate}T${selectedTime}:00`,
-        status: 'pending'
-      })});
-
-      if (aptRes.ok) setConfirmed(true);
-      else alert('Erro ao confirmar agendamento. Tente novamente.');
+      if (bookingRes.ok) setConfirmed(true);
+      else alert((bookingData as any)?.error || 'Erro ao confirmar agendamento. Tente novamente.');
     } catch { alert('Erro de conexão. Tente novamente.'); }
     finally { setLoading(false); }
   };
@@ -2012,6 +2032,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
                 onChange={(e) => {
                   setIdentifier(e.target.value);
                   setSubscriptionBlocked(false);
+                  setBookingProof('');
                 }}
                 className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm"
               />
@@ -2044,19 +2065,23 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
                     const data = await res.json();
 
                     if (!res.ok) {
+                      setBookingProof('');
                       alert(data?.error || 'Nao foi possivel validar sua assinatura.');
                       return;
                     }
 
                     if (data?.active) {
                       const lockedEmail = String(data.email || value).trim();
+                      setBookingProof(String(data.bookingProof || ''));
                       setClientData((prev) => ({ ...prev, email: lockedEmail }));
                       setStep(2);
                     } else {
+                      setBookingProof('');
                       setSubscriptionBlocked(true);
                       alert('Você precisa de um plano ativo para agendar.');
                     }
                   } catch {
+                    setBookingProof('');
                     alert('Erro de conexao ao validar assinatura. Tente novamente.');
                   } finally {
                     setCheckingSubscription(false);
@@ -2071,15 +2096,33 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
           )}
 
           {step === 2 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {services.map(s => (
-                <button key={s.id} onClick={() => { setSelectedService(s); setStep(3); }} className={cn("p-6 rounded-2xl border text-left transition-all hover:border-white/30", selectedService?.id === s.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
-                  <h4 className="text-lg font-medium text-white mb-1">{s.name}</h4>
-                  {s.description && <p className="text-xs text-gray-500 mb-3">{s.description}</p>}
-                  <div className="flex items-center gap-4 text-sm"><span className="text-emerald-400 font-bold">R$ {Number(s.price).toFixed(2)}</span><span className="text-gray-500">{s.duration_minutes} min</span></div>
-                </button>
-              ))}
-              {services.length === 0 && <p className="text-gray-500 col-span-2 text-center py-12">Nenhum serviço disponível no momento.</p>}
+            <div className="space-y-8">
+              {['Pacote', 'Avulso'].map((cat) => {
+                const groupServices = services.filter(s => (s.category || 'Avulso') === cat);
+                if (groupServices.length === 0) return null;
+                return (
+                  <div key={cat} className="space-y-4">
+                    <h3 className="text-xl font-bold border-b border-white/10 pb-2 mb-4">{cat === 'Pacote' ? 'Pacotes' : 'Serviços Avulsos'}</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {groupServices.map(s => (
+                        <button key={s.id} onClick={() => { setSelectedService(s); setStep(3); }} className={cn("p-4 rounded-2xl border text-left transition-all hover:border-white/30 flex items-center gap-4", selectedService?.id === s.id ? "border-white bg-white/5" : "border-white/10 bg-zinc-900/40")}>
+                          <div className={cn("w-16 h-16 shrink-0 rounded-xl flex items-center justify-center transition-colors border", selectedService?.id === s.id ? "bg-white text-black border-transparent" : "bg-white/5 border-white/10 text-gray-500")}>
+                            {cat === 'Pacote' ? <Package className="w-8 h-8" /> : <Scissors className="w-8 h-8" />}
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="text-lg font-bold text-white mb-1 leading-tight">{s.name}</h4>
+                            <div className="flex items-center justify-between text-sm mt-3">
+                              <span className="text-emerald-400 font-bold text-base">R$ {Number(s.price).toFixed(2)}</span>
+                              <span className="text-gray-500 flex items-center gap-1"><Calendar className="w-3 h-3" /> {s.duration_minutes} min</span>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {services.length === 0 && <p className="text-gray-500 text-center py-12">Nenhum serviço disponível no momento.</p>}
             </div>
           )}
 
@@ -3182,14 +3225,60 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isSupabaseConfigured) return;
+
+    const originalFetch = window.fetch.bind(window);
+
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input);
+      const isApiRequest =
+        requestUrl.startsWith('/api/') ||
+        requestUrl.startsWith(`${window.location.origin}/api/`);
+
+      if (!isApiRequest) {
+        return originalFetch(input, init);
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) {
+        return originalFetch(input, init);
+      }
+
+      if (input instanceof Request) {
+        const headers = new Headers(input.headers);
+        if (!headers.has('Authorization')) {
+          headers.set('Authorization', `Bearer ${token}`);
+        }
+
+        return originalFetch(new Request(input, { headers }), init);
+      }
+
+      const headers = new Headers(init?.headers || {});
+      if (!headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+
+      return originalFetch(input, { ...init, headers });
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
+
   const roleFromMetadata = String(
     session?.user?.app_metadata?.role ||
     session?.user?.user_metadata?.role ||
     ''
   ).toLowerCase();
-  const isAdmin = Boolean(session) && (
-    !roleFromMetadata || ['admin', 'owner', 'superadmin'].includes(roleFromMetadata)
-  );
+  const isAdmin = Boolean(session) && ['admin', 'owner', 'superadmin'].includes(roleFromMetadata);
 
   return (
     <div className="min-h-screen bg-black text-white font-sans selection:bg-white selection:text-black">
@@ -3199,7 +3288,7 @@ export default function App() {
           {activeTab === 'landing' ? (
             <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'booking' ? (
-            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking setActiveTab={setActiveTab} /></motion.div>
+            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><BookingPage /></motion.div>
           ) : activeTab === 'privacy' ? (
             <motion.div key="privacy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="privacy" /></motion.div>
           ) : activeTab === 'terms' ? (
