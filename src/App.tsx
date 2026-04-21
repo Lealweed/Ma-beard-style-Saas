@@ -126,6 +126,27 @@ interface ServiceCatalogItem {
   image_url?: string | null;
 }
 
+interface PublicBookingServiceItem {
+  id: string;
+  name: string;
+  price: number;
+  duration_minutes: number;
+  category?: string;
+  active?: boolean;
+  image_url?: string | null;
+}
+
+interface PublicBookingBarber {
+  id: string;
+  name: string;
+  specialty: string;
+  photo_url?: string;
+}
+
+const PUBLIC_BOOKING_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const isUuid = (value: string) => PUBLIC_BOOKING_UUID_PATTERN.test(String(value || '').trim());
+
 interface FinancialReportRow {
   id: number;
   barber_id: number;
@@ -2152,11 +2173,11 @@ const FinancialReport = () => {
 const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }) => {
   const [step, setStep] = useState(1);
   const [customerType, setCustomerType] = useState<'subscriber' | 'non_subscriber'>('subscriber');
-  const [services, setServices] = useState<ServiceCatalogItem[]>([]);
-  const [barbers, setBarbers] = useState<{id: number; name: string; specialty: string; photo_url?: string}[]>([]);
+  const [services, setServices] = useState<PublicBookingServiceItem[]>([]);
+  const [barbers, setBarbers] = useState<PublicBookingBarber[]>([]);
   const [slots, setSlots] = useState<string[]>([]);
-  const [selectedService, setSelectedService] = useState<ServiceCatalogItem | null>(null);
-  const [selectedBarber, setSelectedBarber] = useState<{id: number; name: string; specialty: string; photo_url?: string} | null>(null);
+  const [selectedService, setSelectedService] = useState<PublicBookingServiceItem | null>(null);
+  const [selectedBarber, setSelectedBarber] = useState<PublicBookingBarber | null>(null);
   const [selectedDate, setSelectedDate] = useState('');
   const [selectedTime, setSelectedTime] = useState('');
   const [clientData, setClientData] = useState({ name: '', phone: '', email: '' });
@@ -2169,9 +2190,30 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [subscriptionBlocked, setSubscriptionBlocked] = useState(false);
 
+  const normalizePublicBookingService = (item: any): PublicBookingServiceItem => ({
+    id: String(item?.id || '').trim(),
+    name: String(item?.name || '').trim(),
+    price: Number(item?.price || 0),
+    duration_minutes: Number(item?.duration_minutes || 0),
+    category: String(item?.category || 'Avulso'),
+    active: item?.active !== false,
+    image_url: item?.image_url || null,
+  });
+
+  const normalizePublicBookingBarber = (item: any): PublicBookingBarber => ({
+    id: String(item?.id || '').trim(),
+    name: String(item?.name || '').trim(),
+    specialty: String(item?.specialty || '').trim(),
+    photo_url: item?.photo_url || undefined,
+  });
+
   useEffect(() => {
-    fetch('/api/public/services').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
-    fetch('/api/public/barbers').then(r => r.json()).then(d => setBarbers(Array.isArray(d) ? d : []));
+    fetch('/api/public/services')
+      .then(r => r.json())
+      .then(d => setServices(Array.isArray(d) ? d.map(normalizePublicBookingService) : []));
+    fetch('/api/public/barbers')
+      .then(r => r.json())
+      .then(d => setBarbers(Array.isArray(d) ? d.map(normalizePublicBookingBarber) : []));
   }, []);
 
   useEffect(() => {
@@ -2197,6 +2239,16 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
     if (!selectedBarber) {
       setBookingError('Selecione um barbeiro antes de confirmar.');
+      return;
+    }
+
+    if (!isUuid(selectedService.id)) {
+      setBookingError('Servico invalido. Recarregue a pagina e selecione um item valido.');
+      return;
+    }
+
+    if (!isUuid(selectedBarber.id)) {
+      setBookingError('Barbeiro invalido. Recarregue a pagina e selecione um profissional valido.');
       return;
     }
 
@@ -2239,8 +2291,8 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
         body: JSON.stringify({
           customerType,
           bookingProof,
-          serviceId: selectedService.id,
-          barberId: selectedBarber.id,
+          serviceId: String(selectedService.id),
+          barberId: String(selectedBarber.id),
           date: selectedDate,
           time: selectedTime,
           clientData,

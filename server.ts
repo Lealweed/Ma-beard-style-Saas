@@ -219,21 +219,22 @@ const toValidDate = (value: any) => {
 
 const addMinutes = (date: Date, minutes: number) => new Date(date.getTime() + minutes * 60 * 1000);
 
-const appointmentColumnExistsCache = new Map<string, boolean>();
+const tableColumnExistsCache = new Map<string, boolean>();
 
-const hasAppointmentColumn = async (column: string) => {
+const hasTableColumn = async (table: string, column: string) => {
   if (!supabase) return false;
 
-  const cached = appointmentColumnExistsCache.get(column);
+  const cacheKey = `${table}.${column}`;
+  const cached = tableColumnExistsCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
   const { error } = await supabase
-    .from("appointments")
+    .from(table)
     .select(column)
     .limit(1);
 
   if (!error) {
-    appointmentColumnExistsCache.set(column, true);
+    tableColumnExistsCache.set(cacheKey, true);
     return true;
   }
 
@@ -246,11 +247,24 @@ const hasAppointmentColumn = async (column: string) => {
       message.includes("schema cache")
     )
   ) {
-    appointmentColumnExistsCache.set(column, false);
+    tableColumnExistsCache.set(cacheKey, false);
     return false;
   }
 
   throw error;
+};
+
+const hasAppointmentColumn = async (column: string) => hasTableColumn("appointments", column);
+
+const getEntityUuidColumn = async (table: "customers" | "barbers") => {
+  const [hasUuid, hasTableSpecificUuid] = await Promise.all([
+    hasTableColumn(table, "uuid"),
+    hasTableColumn(table, `${table === "customers" ? "customer" : "barber"}_uuid`),
+  ]);
+
+  if (hasUuid) return "uuid";
+  if (hasTableSpecificUuid) return table === "customers" ? "customer_uuid" : "barber_uuid";
+  return null;
 };
 
 const withLegacyAppointmentTimeColumns = async (payload: Record<string, any>) => {
@@ -278,23 +292,30 @@ const withLegacyAppointmentTimeColumns = async (payload: Record<string, any>) =>
 const withLegacyAppointmentRelationColumns = async (payload: Record<string, any>) => {
   if (!payload) return payload;
 
-  const [hasClientId, hasProfessionalId, hasServiceId] = await Promise.all([
-    Object.prototype.hasOwnProperty.call(payload, "customer_id") ? hasAppointmentColumn("client_id") : Promise.resolve(false),
-    Object.prototype.hasOwnProperty.call(payload, "barber_id") ? hasAppointmentColumn("professional_id") : Promise.resolve(false),
-    Object.prototype.hasOwnProperty.call(payload, "service_id") ? hasAppointmentColumn("service_id") : Promise.resolve(false),
+  return {
+    ...payload,
+  };
+};
+
+const withAppointmentUuidColumns = async (payload: Record<string, any>) => {
+  if (!payload) return payload;
+
+  const [hasCustomerUuid, hasBarberUuid] = await Promise.all([
+    Object.prototype.hasOwnProperty.call(payload, "customer_uuid") ? hasAppointmentColumn("customer_uuid") : Promise.resolve(false),
+    Object.prototype.hasOwnProperty.call(payload, "barber_uuid") ? hasAppointmentColumn("barber_uuid") : Promise.resolve(false),
   ]);
 
   return {
     ...payload,
-    ...(hasClientId ? { client_id: payload.customer_id } : {}),
-    ...(hasProfessionalId ? { professional_id: payload.barber_id } : {}),
-    ...(hasServiceId ? { service_id: payload.service_id } : {}),
+    ...(hasCustomerUuid ? { customer_uuid: payload.customer_uuid } : {}),
+    ...(hasBarberUuid ? { barber_uuid: payload.barber_uuid } : {}),
   };
 };
 
 const withPersistedAppointmentCompatibility = async (payload: Record<string, any>) => {
   const withLegacyRelations = await withLegacyAppointmentRelationColumns(payload);
-  return withLegacyAppointmentTimeColumns(withLegacyRelations);
+  const withUuidRelations = await withAppointmentUuidColumns(withLegacyRelations);
+  return withLegacyAppointmentTimeColumns(withUuidRelations);
 };
 
 const ensureAppointmentLinkColumns = async () => {
@@ -311,26 +332,105 @@ const ensureAppointmentLinkColumns = async () => {
   }
 };
 
+const PUBLIC_ENTITY_UUID_PREFIXES = {
+  customer: 'c001d0010000',
+  barber: 'ba6b00010000',
+  service: '5e7700010000',
+} as const;
+
 const normalizeLegacyNumericId = (value: any) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value);
   return null;
 };
 
+const toPublicEntityUuid = (entityType: keyof typeof PUBLIC_ENTITY_UUID_PREFIXES, value: any) => {
+  const legacyId = normalizeLegacyNumericId(value);
+  if (!legacyId || legacyId <= 0) return null;
+
+  const prefix = PUBLIC_ENTITY_UUID_PREFIXES[entityType];
+  const suffix = legacyId.toString(16).padStart(12, '0');
+  return `${prefix.slice(0, 8)}-${prefix.slice(8, 12)}-4000-8000-${suffix}`;
+};
+
+const fromPublicEntityUuid = (entityType: keyof typeof PUBLIC_ENTITY_UUID_PREFIXES, value: any) => {
+  const normalizedNumericId = normalizeLegacyNumericId(value);
+  if (normalizedNumericId) return normalizedNumericId;
+  if (!isUuid(value)) return null;
+
+  const compact = String(value || '').trim().toLowerCase().replace(/-/g, '');
+  const expectedPrefix = PUBLIC_ENTITY_UUID_PREFIXES[entityType];
+  if (!compact.startsWith(expectedPrefix)) return null;
+
+  const decodedId = parseInt(compact.slice(-12), 16);
+  return Number.isFinite(decodedId) && decodedId > 0 ? decodedId : null;
+};
+
+const normalizeAppointmentRelationUuid = (entityType: keyof typeof PUBLIC_ENTITY_UUID_PREFIXES, value: any) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (isUuid(value)) return String(value).trim().toLowerCase();
+  return toPublicEntityUuid(entityType, value);
+};
+
+const normalizeAppointmentCustomerId = (value: any) => {
+  if (value === null || value === undefined || value === '') return null;
+  return fromPublicEntityUuid('customer', value) ?? normalizeLegacyNumericId(value);
+};
+
+const normalizeAppointmentBarberId = (value: any) => {
+  if (value === null || value === undefined || value === '') return null;
+  return fromPublicEntityUuid('barber', value) ?? normalizeLegacyNumericId(value);
+};
+
+const normalizeAppointmentServiceId = (value: any) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (isUuid(value)) return String(value).trim().toLowerCase();
+  return null;
+};
+
+const normalizeCanonicalUuid = (value: any) => {
+  if (!isUuid(value)) return null;
+  return String(value).trim().toLowerCase();
+};
+
+const getRowEntityUuid = (row: any, uuidColumn: string | null) => {
+  if (!row || !uuidColumn) return null;
+  return normalizeCanonicalUuid(row?.[uuidColumn]);
+};
+
+const getAppointmentCustomerLookupUuid = (appointment: any) =>
+  normalizeCanonicalUuid(appointment?.customer_uuid);
+
+const getAppointmentBarberLookupUuid = (appointment: any) =>
+  normalizeCanonicalUuid(appointment?.barber_uuid);
+
 const getAppointmentCustomerLookupId = (appointment: any) =>
-  normalizeLegacyNumericId(appointment?.customer_id ?? appointment?.client_id);
+  fromPublicEntityUuid('customer', appointment?.customer_id) ?? normalizeLegacyNumericId(appointment?.client_id);
 
 const getAppointmentBarberLookupId = (appointment: any) =>
-  normalizeLegacyNumericId(appointment?.barber_id ?? appointment?.professional_id);
+  fromPublicEntityUuid('barber', appointment?.barber_id) ?? normalizeLegacyNumericId(appointment?.professional_id);
 
 const hydrateAppointmentsDisplayRelations = async (appointments: any[]) => {
   if (!supabase || !appointments?.length) return appointments || [];
+
+  const [customerUuidColumn, barberUuidColumn] = await Promise.all([
+    getEntityUuidColumn("customers"),
+    getEntityUuidColumn("barbers"),
+  ]);
 
   const customerIds = Array.from(
     new Set(
       appointments
         .map((appointment) => getAppointmentCustomerLookupId(appointment))
         .filter((id): id is number => id !== null)
+    )
+  );
+
+  const customerUuids = Array.from(
+    new Set(
+      appointments
+        .map((appointment) => getAppointmentCustomerLookupUuid(appointment))
+        .filter((uuid): uuid is string => Boolean(uuid))
     )
   );
 
@@ -342,24 +442,60 @@ const hydrateAppointmentsDisplayRelations = async (appointments: any[]) => {
     )
   );
 
-  const [customersResult, barbersResult] = await Promise.all([
+  const barberUuids = Array.from(
+    new Set(
+      appointments
+        .map((appointment) => getAppointmentBarberLookupUuid(appointment))
+        .filter((uuid): uuid is string => Boolean(uuid))
+    )
+  );
+
+  const customerSelect = ["id", customerUuidColumn, "name", "phone"].filter(Boolean).join(", ");
+  const barberSelect = ["id", barberUuidColumn, "name"].filter(Boolean).join(", ");
+
+  const [customersByIdResult, customersByUuidResult, barbersByIdResult, barbersByUuidResult] = await Promise.all([
     customerIds.length
-      ? supabase.from("customers").select("id, name, phone").in("id", customerIds)
+      ? supabase.from("customers").select(customerSelect).in("id", customerIds)
+      : Promise.resolve({ data: [], error: null }),
+    customerUuids.length && customerUuidColumn
+      ? supabase.from("customers").select(customerSelect).in(customerUuidColumn, customerUuids)
       : Promise.resolve({ data: [], error: null }),
     barberIds.length
-      ? supabase.from("barbers").select("id, name").in("id", barberIds)
+      ? supabase.from("barbers").select(barberSelect).in("id", barberIds)
+      : Promise.resolve({ data: [], error: null }),
+    barberUuids.length && barberUuidColumn
+      ? supabase.from("barbers").select(barberSelect).in(barberUuidColumn, barberUuids)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  if (customersResult.error) throw customersResult.error;
-  if (barbersResult.error) throw barbersResult.error;
+  if (customersByIdResult.error) throw customersByIdResult.error;
+  if (customersByUuidResult.error) throw customersByUuidResult.error;
+  if (barbersByIdResult.error) throw barbersByIdResult.error;
+  if (barbersByUuidResult.error) throw barbersByUuidResult.error;
 
-  const customersById = new Map((customersResult.data || []).map((customer: any) => [Number(customer.id), customer]));
-  const barbersById = new Map((barbersResult.data || []).map((barber: any) => [Number(barber.id), barber]));
+  const customerRows = [...(customersByIdResult.data || []), ...(customersByUuidResult.data || [])];
+  const barberRows = [...(barbersByIdResult.data || []), ...(barbersByUuidResult.data || [])];
+
+  const customersById = new Map(customerRows.map((customer: any) => [Number(customer.id), customer]));
+  const customersByUuid = new Map(
+    customerRows
+      .map((customer: any) => [getRowEntityUuid(customer, customerUuidColumn), customer] as const)
+      .filter(([uuid]) => Boolean(uuid))
+  );
+  const barbersById = new Map(barberRows.map((barber: any) => [Number(barber.id), barber]));
+  const barbersByUuid = new Map(
+    barberRows
+      .map((barber: any) => [getRowEntityUuid(barber, barberUuidColumn), barber] as const)
+      .filter(([uuid]) => Boolean(uuid))
+  );
 
   return appointments.map((appointment) => {
-    const customer = customersById.get(getAppointmentCustomerLookupId(appointment) || -1) || null;
-    const barber = barbersById.get(getAppointmentBarberLookupId(appointment) || -1) || null;
+    const customer = customersByUuid.get(getAppointmentCustomerLookupUuid(appointment) || "")
+      || customersById.get(getAppointmentCustomerLookupId(appointment) || -1)
+      || null;
+    const barber = barbersByUuid.get(getAppointmentBarberLookupUuid(appointment) || "")
+      || barbersById.get(getAppointmentBarberLookupId(appointment) || -1)
+      || null;
 
     return {
       ...appointment,
@@ -1242,13 +1378,16 @@ const getBusyRangesForBarberDate = async (
 ) => {
   if (!supabase) return [];
 
+  const persistedBarberId = await resolveLegacyEntityId("barbers", "barber", barberId);
+  if (!persistedBarberId) return [];
+
   const dayStartIso = `${date}T00:00:00`;
   const dayEndIso = `${date}T23:59:59`;
 
   const { data: appointments } = await supabase
     .from("appointments")
     .select("appointment_date, appointment_end")
-    .eq("barber_id", barberId)
+    .eq("barber_id", persistedBarberId)
     .neq("status", "cancelled")
     .gte("appointment_date", dayStartIso)
     .lte("appointment_date", dayEndIso);
@@ -1321,6 +1460,9 @@ const computeAvailableSlotsForBarberDate = async ({
 const normalizeCustomerType = (value: any) =>
   String(value || '').trim().toLowerCase() === 'subscriber' ? 'subscriber' : 'non_subscriber';
 
+const isUuid = (value: any) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+
 const normalizeCustomerStatus = (value: any) =>
   String(value || '').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
 
@@ -1340,13 +1482,14 @@ const normalizeNullableDateTimeIso = (value: any) => {
   return date ? date.toISOString() : null;
 };
 
-const getServiceCatalogItem = async (serviceId: number) => {
-  if (!supabase || !serviceId) return null;
+const getServiceCatalogItem = async (serviceId: string | number) => {
+  const legacyServiceId = fromPublicEntityUuid('service', serviceId);
+  if (!supabase || !legacyServiceId) return null;
 
   const { data, error } = await supabase
     .from('services_catalog')
     .select('id, name, price, duration_minutes, active, category')
-    .eq('id', serviceId)
+    .eq('id', legacyServiceId)
     .maybeSingle();
 
   if (error) throw error;
@@ -1373,7 +1516,7 @@ const getPublicServicesCatalog = async () => {
   if (error) throw error;
 
   return (data || []).map((service: any) => ({
-    id: Number(service.id),
+    id: toPublicEntityUuid('service', service.id),
     name: String(service.name || ''),
     duration_minutes: Number(service.duration_minutes || 0),
     price: Number(service.price || 0),
@@ -1383,17 +1526,64 @@ const getPublicServicesCatalog = async () => {
   }));
 };
 
-const getCustomerById = async (customerId: number) => {
-  if (!supabase || !customerId) return null;
+const getCustomerById = async (customerId: string | number) => {
+  const legacyCustomerId = await resolveLegacyEntityId("customers", "customer", customerId);
+  if (!supabase || !legacyCustomerId) return null;
+
+  const customerUuidColumn = await getEntityUuidColumn("customers");
+  const customerSelect = ["id", customerUuidColumn, "customer_type", "status", "name", "phone", "email"]
+    .filter(Boolean)
+    .join(", ");
 
   const { data, error } = await supabase
     .from('customers')
-    .select('id, customer_type, status, name, phone, email')
-    .eq('id', customerId)
+    .select(customerSelect)
+    .eq('id', legacyCustomerId)
     .maybeSingle();
 
   if (error) throw error;
   return data || null;
+};
+
+const getBarberById = async (barberId: string | number) => {
+  const legacyBarberId = await resolveLegacyEntityId("barbers", "barber", barberId);
+  if (!supabase || !legacyBarberId) return null;
+
+  const barberUuidColumn = await getEntityUuidColumn("barbers");
+  const barberSelect = ["id", barberUuidColumn, "active", "commission_rate", "name", "specialty", "photo_url"]
+    .filter(Boolean)
+    .join(", ");
+
+  const { data, error } = await supabase
+    .from('barbers')
+    .select(barberSelect)
+    .eq('id', legacyBarberId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
+
+const resolveLegacyEntityId = async (
+  table: "customers" | "barbers",
+  entityType: "customer" | "barber",
+  value: any
+) => {
+  const numericId = normalizeLegacyNumericId(value) ?? fromPublicEntityUuid(entityType, value);
+  if (numericId) return numericId;
+  if (!supabase || !isUuid(value)) return null;
+
+  const uuidColumn = await getEntityUuidColumn(table);
+  if (!uuidColumn) return null;
+
+  const { data, error } = await supabase
+    .from(table)
+    .select("id")
+    .eq(uuidColumn, String(value).trim().toLowerCase())
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.id ? Number(data.id) : null;
 };
 
 const findOrCreateCustomer = async ({
@@ -1424,7 +1614,7 @@ const findOrCreateCustomer = async ({
   customerStatus?: string;
   photoUrl?: string;
   profileTag?: string;
-}) => {
+}): Promise<string | number> => {
   if (!supabase) {
     throw new Error("Supabase nao configurado.");
   }
@@ -1579,7 +1769,9 @@ const isBlockedServiceType = (value: any) => {
 
 const buildAppointmentWritePayload = async ({
   customerId,
+  customerUuid,
   barberId,
+  barberUuid,
   serviceId,
   serviceType,
   appointmentDate,
@@ -1591,9 +1783,11 @@ const buildAppointmentWritePayload = async ({
   customerTypeSnapshot,
   syncOrigin,
 }: {
-  customerId?: number | null;
-  barberId?: number | null;
-  serviceId?: number | null;
+  customerId?: string | number | null;
+  customerUuid?: string | null;
+  barberId?: string | number | null;
+  barberUuid?: string | null;
+  serviceId?: string | number | null;
   serviceType?: string | null;
   appointmentDate: string;
   appointmentEnd: string;
@@ -1604,9 +1798,16 @@ const buildAppointmentWritePayload = async ({
   customerTypeSnapshot?: string | null;
   syncOrigin?: string | null;
 }) => {
-  const safeServiceId = Number(serviceId || 0) || null;
+  const safeCustomerId = await resolveLegacyEntityId("customers", "customer", customerId);
+  const safeBarberId = await resolveLegacyEntityId("barbers", "barber", barberId);
+  const safeServiceId = normalizeAppointmentServiceId(serviceId);
   const service = safeServiceId ? await getServiceCatalogItem(safeServiceId) : null;
-  const customer = customerId ? await getCustomerById(Number(customerId)) : null;
+  const customer = safeCustomerId ? await getCustomerById(safeCustomerId) : null;
+  const barber = safeBarberId ? await getBarberById(safeBarberId) : null;
+  const customerUuidColumn = await getEntityUuidColumn("customers");
+  const barberUuidColumn = await getEntityUuidColumn("barbers");
+  const safeCustomerUuid = normalizeCanonicalUuid(customerUuid) || getRowEntityUuid(customer, customerUuidColumn);
+  const safeBarberUuid = normalizeCanonicalUuid(barberUuid) || getRowEntityUuid(barber, barberUuidColumn);
   const normalizedServiceType = String(serviceType || service?.name || '').trim();
   const resolvedPricingMode = String(pricingMode || '').trim() === 'plan_covered'
     ? 'plan_covered'
@@ -1618,11 +1819,13 @@ const buildAppointmentWritePayload = async ({
     : resolvedPricingMode === 'plan_covered'
       ? 0
       : Number(service?.price || 0);
-  const resolvedCustomerType = normalizeCustomerType(customerTypeSnapshot || customer?.customer_type);
+  const resolvedCustomerType = normalizeCustomerType(customerTypeSnapshot || (customer as any)?.customer_type);
 
   return withPersistedAppointmentCompatibility({
-    customer_id: customerId || null,
-    barber_id: barberId || null,
+    customer_id: safeCustomerId,
+    customer_uuid: safeCustomerUuid,
+    barber_id: safeBarberId,
+    barber_uuid: safeBarberUuid,
     service_id: safeServiceId,
     service_type: normalizedServiceType,
     appointment_date: appointmentDate,
@@ -1905,7 +2108,7 @@ async function startServer() {
   });
 
   app.post("/api/appointments", async (req, res) => {
-    const { customer_id, barber_id, service_id, service_type, appointment_date, appointment_end, status, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
+    const { customer_id, customer_uuid, barber_id, barber_uuid, service_id, service_type, appointment_date, appointment_end, status, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
     try {
       const start = toValidDate(appointment_date);
       if (!start) {
@@ -1919,7 +2122,9 @@ async function startServer() {
 
       const insertPayload = await buildAppointmentWritePayload({
         customerId: customer_id || null,
+        customerUuid: customer_uuid || null,
         barberId: barber_id || null,
+        barberUuid: barber_uuid || null,
         serviceId: service_id || null,
         serviceType: service_type,
         appointmentDate: start.toISOString(),
@@ -1993,7 +2198,7 @@ async function startServer() {
   });
 
   app.put("/api/appointments/:id", async (req, res) => {
-    const { status, appointment_date, appointment_end, service_type, service_id, barber_id, customer_id, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
+    const { status, appointment_date, appointment_end, service_type, service_id, barber_id, barber_uuid, customer_id, customer_uuid, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
     const { id } = req.params;
     
     try {
@@ -2014,7 +2219,9 @@ async function startServer() {
       if (service_type !== undefined) updateData.service_type = service_type;
       if (service_id !== undefined) updateData.service_id = service_id || null;
       if (barber_id !== undefined) updateData.barber_id = barber_id || null;
+      if (barber_uuid !== undefined) updateData.barber_uuid = barber_uuid || null;
       if (customer_id !== undefined) updateData.customer_id = customer_id || null;
+      if (customer_uuid !== undefined) updateData.customer_uuid = customer_uuid || null;
       if (notes !== undefined) updateData.notes = notes || null;
       if (quoted_price !== undefined) updateData.quoted_price = Number(quoted_price || 0);
       if (pricing_mode !== undefined) updateData.pricing_mode = pricing_mode;
@@ -2031,7 +2238,9 @@ async function startServer() {
 
       const persistedUpdateData = await buildAppointmentWritePayload({
         customerId: updateData.customer_id !== undefined ? updateData.customer_id : oldApt.customer_id,
+        customerUuid: updateData.customer_uuid !== undefined ? updateData.customer_uuid : oldApt.customer_uuid,
         barberId: updateData.barber_id !== undefined ? updateData.barber_id : oldApt.barber_id,
+        barberUuid: updateData.barber_uuid !== undefined ? updateData.barber_uuid : oldApt.barber_uuid,
         serviceId: updateData.service_id !== undefined ? updateData.service_id : oldApt.service_id,
         serviceType: updateData.service_type !== undefined ? updateData.service_type : oldApt.service_type,
         appointmentDate: updateData.appointment_date || oldApt.appointment_date,
@@ -2867,8 +3076,13 @@ async function startServer() {
   // --- Public Booking Routes ---
 
   app.get("/api/public/barbers", async (req, res) => {
-    const { data } = await supabase.from('barbers').select('id, name, specialty, photo_url').eq('active', true);
-    res.json(data || []);
+    const barberUuidColumn = await getEntityUuidColumn("barbers");
+    const barberSelect = ['id', barberUuidColumn, 'name', 'specialty', 'photo_url'].filter(Boolean).join(', ');
+    const { data } = await supabase.from('barbers').select(barberSelect).eq('active', true);
+    res.json((data || []).map((barber: any) => ({
+      ...barber,
+      id: getRowEntityUuid(barber, barberUuidColumn) || toPublicEntityUuid('barber', barber?.id),
+    })));
   });
 
   app.get("/api/public/services", async (req, res) => {
@@ -2921,8 +3135,8 @@ async function startServer() {
   app.post("/api/public/book-appointment", async (req, res) => {
     const bookingProof = String(req.body?.bookingProof || '').trim();
     const customerType = normalizeCustomerType(req.body?.customerType);
-    const serviceId = Number(req.body?.serviceId || 0);
-    const barberId = Number(req.body?.barberId || 0);
+    const serviceId = String(req.body?.serviceId || '').trim();
+    const barberId = String(req.body?.barberId || '').trim();
     const date = String(req.body?.date || '').trim();
     const time = String(req.body?.time || '').trim();
     const clientData = req.body?.clientData || {};
@@ -2947,6 +3161,14 @@ async function startServer() {
       return res.status(400).json({ error: 'Barbeiro obrigatorio.' });
     }
 
+    if (!isUuid(serviceId)) {
+      return res.status(400).json({ error: 'serviceId invalido.' });
+    }
+
+    if (!isUuid(barberId)) {
+      return res.status(400).json({ error: 'barberId invalido.' });
+    }
+
     if (!date) {
       return res.status(400).json({ error: 'Data obrigatoria.' });
     }
@@ -2961,14 +3183,6 @@ async function startServer() {
 
     if (!clientPhone) {
       return res.status(400).json({ error: 'Telefone do cliente obrigatorio.' });
-    }
-
-    if (!Number.isInteger(serviceId) || serviceId <= 0) {
-      return res.status(400).json({ error: 'Servico invalido.' });
-    }
-
-    if (!Number.isInteger(barberId) || barberId <= 0) {
-      return res.status(400).json({ error: 'Barbeiro invalido.' });
     }
 
     if (!serviceId || !barberId || !date || !time) {
@@ -2989,7 +3203,7 @@ async function startServer() {
       const { data: service, error: serviceError } = await supabase
         .from('services_catalog')
         .select('id, name, price, duration_minutes, active')
-        .eq('id', serviceId)
+        .eq('id', fromPublicEntityUuid('service', serviceId))
         .single();
 
       if (serviceError || !service || service.active === false) {
@@ -2998,8 +3212,8 @@ async function startServer() {
 
       const { data: barber, error: barberError } = await supabase
         .from('barbers')
-        .select('id, active')
-        .eq('id', barberId)
+        .select('id, active, commission_rate')
+        .eq('id', await resolveLegacyEntityId("barbers", "barber", barberId))
         .maybeSingle();
 
       if (barberError) {
@@ -3039,10 +3253,35 @@ async function startServer() {
         return res.status(400).json({ error: 'Nao foi possivel resolver os vinculos obrigatorios do agendamento.' });
       }
 
+      const commissionAmount = Number(service.price || 0) * Number(barber.commission_rate || 0);
+      const priceCents = Math.round((customerType === 'subscriber' ? 0 : Number(service.price || 0)) * 100);
+      const { data: persistedServices, error: persistedServiceError } = await supabase
+        .from('services')
+        .insert([{
+          name: String(service.name || '').trim(),
+          barber_id: barber.id,
+          customer_name: clientName,
+          service_type: String(service.name || '').trim(),
+          duration_min: Math.max(15, Number(service.duration_minutes || 60) || 60),
+          price_cents: priceCents,
+          commission_amount: customerType === 'subscriber' ? 0 : commissionAmount,
+        }])
+        .select('id')
+        .limit(1);
+
+      if (persistedServiceError) {
+        throw persistedServiceError;
+      }
+
+      const persistedServiceId = String(persistedServices?.[0]?.id || '').trim();
+      if (!isUuid(persistedServiceId)) {
+        throw new Error('Nao foi possivel gerar um service_id valido para o agendamento publico.');
+      }
+
       const insertPayload = await buildAppointmentWritePayload({
         customerId,
-        barberId,
-        serviceId: Number(service.id),
+        barberId: barber.id,
+        serviceId: persistedServiceId,
         serviceType: String(service.name || '').trim(),
         appointmentDate: start.toISOString(),
         appointmentEnd: end.toISOString(),
