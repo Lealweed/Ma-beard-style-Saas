@@ -1,4 +1,4 @@
-import { type Key, useMemo, useState } from 'react';
+import { type Key, useEffect, useMemo, useState } from 'react';
 import { Clock3, Package, Scissors, Search } from 'lucide-react';
 import { motion } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -13,35 +13,20 @@ type ServicesView = 'services' | 'packages';
 type ServiceItem = {
   id: number;
   name: string;
-  duration: number;
-  priceLabel: string;
-  priceValue: number;
-  category?: 'Pacote';
-  image?: string;
+  duration_minutes: number;
+  price: number;
+  category?: string;
+  image_url?: string | null;
+  active?: boolean;
 };
 
-const SERVICES_CATALOG: ServiceItem[] = [
-  { id: 1, name: 'Barboterapia', duration: 30, priceLabel: 'R$ 40,00', priceValue: 40 },
-  { id: 2, name: 'Botox', duration: 80, priceLabel: 'R$ 100,00', priceValue: 100 },
-  { id: 3, name: 'Cabelo', duration: 60, priceLabel: 'R$ 40,00', priceValue: 40 },
-  { id: 4, name: 'Cabelo e barbotetapia', duration: 60, priceLabel: 'R$ 80,00', priceValue: 80, category: 'Pacote' },
-  { id: 5, name: 'Cabelo e sobrancelha', duration: 35, priceLabel: 'R$ 50,00', priceValue: 50, category: 'Pacote' },
-  { id: 6, name: 'Cabelo, barboterapia e sobrancelha', duration: 75, priceLabel: 'R$ 90,00', priceValue: 90, category: 'Pacote' },
-  { id: 7, name: 'Cone hindu', duration: 20, priceLabel: 'R$ 25,00', priceValue: 25 },
-  { id: 8, name: 'Corte', duration: 30, priceLabel: 'R$ 40,00', priceValue: 40 },
-  { id: 9, name: 'Depilação de nariz com cera', duration: 5, priceLabel: 'R$ 15,00', priceValue: 15 },
-  { id: 10, name: 'Hidratação capilar', duration: 20, priceLabel: 'R$ 20,00', priceValue: 20 },
-  { id: 11, name: 'Máscara negra', duration: 20, priceLabel: 'R$ 25,00', priceValue: 25 },
-  { id: 12, name: 'Selagem', duration: 80, priceLabel: 'R$ 100,00', priceValue: 100 },
-  { id: 13, name: 'Sobrancelha na pinça', duration: 10, priceLabel: 'R$ 15,00', priceValue: 15 },
-  { id: 14, name: 'Sobrancelha navalha', duration: 10, priceLabel: 'R$ 10,00', priceValue: 10 },
-];
+const formatCurrency = (value: number) => `R$ ${Number(value || 0).toFixed(2).replace('.', ',')}`;
 
 const ServiceThumbnail = ({ service }: { service: ServiceItem }) => {
   const isPackage = service.category === 'Pacote';
 
-  if (service.image) {
-    return <img src={service.image} alt={service.name} className="h-14 w-14 rounded-2xl object-cover shadow-sm" />;
+  if (service.image_url) {
+    return <img src={service.image_url} alt={service.name} className="h-14 w-14 rounded-2xl object-cover shadow-sm" />;
   }
 
   return (
@@ -77,7 +62,7 @@ const ServiceCard = ({ service }: { key?: Key; service: ServiceItem }) => {
               <h3 className="text-[15px] font-semibold leading-5 text-slate-900">{service.name}</h3>
               <p className="mt-2 flex items-center gap-1.5 text-sm text-slate-500">
                 <Clock3 className="h-3.5 w-3.5 text-violet-500" />
-                {service.duration} min. - {service.priceLabel}
+                {service.duration_minutes} min. - {formatCurrency(service.price)}
               </p>
               {isPackage && (
                 <p className="mt-2 text-xs font-medium text-violet-600">Categoria: Pacote</p>
@@ -96,13 +81,41 @@ const ServiceCard = ({ service }: { key?: Key; service: ServiceItem }) => {
 };
 
 export const ServicesPage = () => {
+  const [services, setServices] = useState<ServiceItem[]>([]);
   const [query, setQuery] = useState('');
   const [activeView, setActiveView] = useState<ServicesView>('services');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const fetchServices = async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const response = await fetch('/api/public/services');
+      const data = await response.json().catch(() => []);
+
+      if (!response.ok) {
+        throw new Error(String((data as any)?.error || 'Não foi possível carregar os serviços agora.'));
+      }
+
+      setServices(Array.isArray(data) ? data : []);
+    } catch (fetchError: any) {
+      setServices([]);
+      setError(fetchError?.message || 'Não foi possível carregar os serviços agora.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchServices();
+  }, []);
 
   const filteredServices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return SERVICES_CATALOG.filter((service) => {
+    return services.filter((service) => {
       const matchesTab = activeView === 'services'
         ? service.category !== 'Pacote'
         : service.category === 'Pacote';
@@ -113,10 +126,10 @@ export const ServicesPage = () => {
       const searchable = `${service.name} ${service.category || 'Serviços'}`.toLowerCase();
       return searchable.includes(normalizedQuery);
     });
-  }, [activeView, query]);
+  }, [activeView, query, services]);
 
-  const packagesCount = SERVICES_CATALOG.filter((service) => service.category === 'Pacote').length;
-  const servicesCount = SERVICES_CATALOG.length - packagesCount;
+  const packagesCount = services.filter((service) => service.category === 'Pacote').length;
+  const servicesCount = services.length - packagesCount;
 
   return (
     <div className="min-h-screen bg-[#f6f2ff] pb-28 pt-24 text-slate-900">
@@ -133,7 +146,7 @@ export const ServicesPage = () => {
               </div>
               <div className="rounded-[24px] border border-white/20 bg-white/15 px-4 py-3 text-right backdrop-blur-sm">
                 <p className="text-[11px] uppercase tracking-[0.22em] text-violet-100/80">Itens</p>
-                <p className="mt-1 text-2xl font-semibold">14</p>
+                <p className="mt-1 text-2xl font-semibold">{services.length}</p>
               </div>
             </div>
           </div>
@@ -154,11 +167,36 @@ export const ServicesPage = () => {
           </div>
 
           <div className="space-y-3 pb-4">
-            {filteredServices.map((service) => (
+            {loading && (
+              <div className="rounded-[28px] border border-violet-100 bg-white/80 px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
+                <p className="text-sm font-medium text-slate-700">Carregando serviços do catálogo...</p>
+              </div>
+            )}
+
+            {!loading && error && (
+              <div className="rounded-[28px] border border-rose-200 bg-white px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
+                <p className="text-sm font-medium text-slate-700">{error}</p>
+                <button
+                  onClick={() => void fetchServices()}
+                  className="mt-4 rounded-2xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-500"
+                >
+                  Tentar novamente
+                </button>
+              </div>
+            )}
+
+            {!loading && !error && filteredServices.map((service) => (
               <ServiceCard key={service.id} service={service} />
             ))}
 
-            {filteredServices.length === 0 && (
+            {!loading && !error && services.length === 0 && (
+              <div className="rounded-[28px] border border-dashed border-violet-200 bg-white/80 px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
+                <p className="text-sm font-medium text-slate-700">Nenhum serviço ativo disponível.</p>
+                <p className="mt-2 text-sm text-slate-500">Publique serviços ativos no catálogo para exibir nesta página.</p>
+              </div>
+            )}
+
+            {!loading && !error && services.length > 0 && filteredServices.length === 0 && (
               <div className="rounded-[28px] border border-dashed border-violet-200 bg-white/80 px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
                 <p className="text-sm font-medium text-slate-700">Nenhum resultado encontrado.</p>
                 <p className="mt-2 text-sm text-slate-500">Tente buscar pelo nome do serviço ou pela categoria Pacote.</p>

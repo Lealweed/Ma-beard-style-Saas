@@ -123,6 +123,52 @@ interface ServiceCatalogItem {
   description?: string;
   active?: boolean;
   category?: string;
+  image_url?: string | null;
+}
+
+interface FinancialReportRow {
+  id: number;
+  barber_id: number;
+  date: string;
+  customer_name: string;
+  barber_name: string;
+  customer_type: 'subscriber' | 'non_subscriber';
+  billing_mode: 'plan_covered' | 'service_charge' | 'custom' | string;
+  final_amount: number;
+  quoted_price: number;
+}
+
+interface FinancialReportSummaryByCustomerType {
+  customer_type: 'subscriber' | 'non_subscriber';
+  total_appointments: number;
+  revenue: number;
+  avg_ticket: number;
+}
+
+interface FinancialReportSummaryByBarber {
+  barber_id: number;
+  barber_name: string;
+  total_appointments: number;
+  total_revenue: number;
+  subscriber_appointments: number;
+  subscriber_revenue: number;
+  subscriber_avg_ticket: number;
+  non_subscriber_appointments: number;
+  non_subscriber_revenue: number;
+  non_subscriber_avg_ticket: number;
+}
+
+interface FinancialReportData {
+  revenue_total: number;
+  revenue_subscribers: number;
+  revenue_non_subscribers: number;
+  avg_ticket_subscribers: number;
+  avg_ticket_non_subscribers: number;
+  non_subscriber_share: number;
+  total_appointments: number;
+  rows: FinancialReportRow[];
+  summary_by_customer_type: FinancialReportSummaryByCustomerType[];
+  summary_by_barber: FinancialReportSummaryByBarber[];
 }
 
 interface Expense {
@@ -1902,51 +1948,177 @@ const ExpensesManager = () => {
 };
 
 const FinancialReport = () => {
-  const [data, setData] = useState<{ revenue: number; expenses: number; profit: number; margin: number } | null>(null);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
+  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const [data, setData] = useState<FinancialReportData | null>(null);
+  const [barbers, setBarbers] = useState<Barber[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [filters, setFilters] = useState({
+    start: firstDayOfMonth,
+    end: lastDayOfMonth,
+    barberId: '',
+    customerType: '',
+    billingMode: '',
+  });
+
+  const formatCurrency = (value: number) => `R$ ${Number(value || 0).toFixed(2)}`;
+  const formatCustomerType = (value: string) => value === 'subscriber' ? 'Assinante' : 'Avulso';
+  const formatBillingMode = (value: string) => (
+    value === 'plan_covered'
+      ? 'Coberto pelo plano'
+      : value === 'custom'
+        ? 'Preço customizado'
+        : 'Cobrança avulsa'
+  );
 
   useEffect(() => {
-    fetch('/api/reports/financial').then(r => r.json()).then(setData);
-    fetch('/api/expenses').then(r => r.json()).then(d => setExpenses(Array.isArray(d) ? d : []));
+    fetch('/api/barbers').then(r => r.json()).then(d => setBarbers(Array.isArray(d) ? d : []));
   }, []);
 
-  if (!data) return <div className="text-white">Carregando relatório financeiro...</div>;
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (filters.start) params.set('start', `${filters.start}T00:00:00`);
+    if (filters.end) params.set('end', `${filters.end}T23:59:59`);
+    if (filters.barberId) params.set('barberId', filters.barberId);
+    if (filters.customerType) params.set('customerType', filters.customerType);
+    if (filters.billingMode) params.set('billingMode', filters.billingMode);
 
-  const expensesByCategory: Record<string, number> = {};
-  expenses.forEach(e => {
-    expensesByCategory[e.category] = (expensesByCategory[e.category] || 0) + Number(e.amount);
-  });
+    setLoading(true);
+    setError('');
+
+    fetch(`/api/reports/financial?${params.toString()}`)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(String((payload as any)?.error || 'Falha ao carregar relatório financeiro.'));
+        }
+        setData(payload);
+      })
+      .catch((requestError: any) => {
+        setData(null);
+        setError(requestError?.message || 'Falha ao carregar relatório financeiro.');
+      })
+      .finally(() => setLoading(false));
+  }, [filters]);
+
+  if (loading && !data) return <div className="text-white">Carregando relatório financeiro...</div>;
+  if (error && !data) return <div className="text-red-300">{error}</div>;
+  if (!data) return <div className="text-white">Nenhum dado financeiro disponível.</div>;
 
   return (
     <div className="space-y-8">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard label="Receita Bruta" value={`R$ ${data.revenue.toFixed(2)}`} icon={TrendingUp} />
-        <StatCard label="Despesas Totais" value={`R$ ${data.expenses.toFixed(2)}`} icon={DollarSign} variant={data.expenses > data.revenue ? 'warning' : 'default'} />
-        <StatCard label="Lucro Líquido" value={`R$ ${data.profit.toFixed(2)}`} icon={DollarSign} trend={data.profit >= 0 ? `+${data.margin.toFixed(1)}%` : `${data.margin.toFixed(1)}%`} />
-        <StatCard label="Margem" value={`${data.margin.toFixed(1)}%`} icon={PieChart} />
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <input type="date" value={filters.start} onChange={(e) => setFilters((prev) => ({ ...prev, start: e.target.value }))} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+          <input type="date" value={filters.end} onChange={(e) => setFilters((prev) => ({ ...prev, end: e.target.value }))} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+          <select value={filters.barberId} onChange={(e) => setFilters((prev) => ({ ...prev, barberId: e.target.value }))} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+            <option value="">Todos os barbeiros</option>
+            {barbers.map((barber) => <option key={barber.id} value={barber.id}>{barber.name}</option>)}
+          </select>
+          <select value={filters.customerType} onChange={(e) => setFilters((prev) => ({ ...prev, customerType: e.target.value }))} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+            <option value="">Todos os perfis</option>
+            <option value="subscriber">Assinante</option>
+            <option value="non_subscriber">Avulso</option>
+          </select>
+          <select value={filters.billingMode} onChange={(e) => setFilters((prev) => ({ ...prev, billingMode: e.target.value }))} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+            <option value="">Todos os modos</option>
+            <option value="plan_covered">Coberto pelo plano</option>
+            <option value="service_charge">Cobrança avulsa</option>
+            <option value="custom">Preço customizado</option>
+          </select>
+        </div>
       </div>
+
+      {error && (
+        <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+        <StatCard label="Receita total" value={formatCurrency(data.revenue_total)} icon={TrendingUp} />
+        <StatCard label="Receita assinantes" value={formatCurrency(data.revenue_subscribers)} icon={Users} />
+        <StatCard label="Receita avulsos" value={formatCurrency(data.revenue_non_subscribers)} icon={DollarSign} />
+        <StatCard label="Ticket médio assinantes" value={formatCurrency(data.avg_ticket_subscribers)} icon={History} />
+        <StatCard label="Ticket médio avulsos" value={formatCurrency(data.avg_ticket_non_subscribers)} icon={CreditCard} />
+        <StatCard label="% participação avulsos" value={`${data.non_subscriber_share.toFixed(1)}%`} icon={PieChart} />
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
-          <h3 className="text-xl font-medium mb-6">DRE Simplificado</h3>
+          <h3 className="text-xl font-medium mb-6">Resumo por tipo de cliente</h3>
           <div className="space-y-4">
-            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">Receita (Serviços + Vendas)</span><span className="text-emerald-400 font-bold">R$ {data.revenue.toFixed(2)}</span></div>
-            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">(-) Comissões de Barbeiros</span><span className="text-red-400">incluído abaixo</span></div>
-            <div className="flex justify-between py-3 border-b border-white/5"><span className="text-gray-400">(-) Despesas Operacionais</span><span className="text-red-400">R$ {data.expenses.toFixed(2)}</span></div>
-            <div className="flex justify-between py-3 text-lg"><span className="font-bold text-white">= Resultado</span><span className={cn("font-bold", data.profit >= 0 ? "text-emerald-400" : "text-red-400")}>R$ {data.profit.toFixed(2)}</span></div>
-          </div>
-        </div>
-        <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
-          <h3 className="text-xl font-medium mb-6">Despesas por Categoria</h3>
-          <div className="space-y-3">
-            {Object.entries(expensesByCategory).sort((a, b) => b[1] - a[1]).map(([cat, val]) => (
-              <div key={cat} className="flex flex-col gap-1">
-                <div className="flex justify-between text-sm"><span className="text-white">{cat}</span><span className="text-red-400 font-bold">R$ {val.toFixed(2)}</span></div>
-                <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden"><div className="h-full bg-red-500/60" style={{ width: `${data.expenses > 0 ? (val / data.expenses) * 100 : 0}%` }} /></div>
+            {data.summary_by_customer_type.map((entry) => (
+              <div key={entry.customer_type} className="rounded-2xl border border-white/5 bg-black/20 p-4 space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-white font-medium">{formatCustomerType(entry.customer_type)}</span>
+                  <span className="text-xs uppercase tracking-widest text-gray-500">{entry.total_appointments} atendimentos</span>
+                </div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Faturamento</span><span className="text-emerald-400 font-bold">{formatCurrency(entry.revenue)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Ticket médio</span><span className="text-white">{formatCurrency(entry.avg_ticket)}</span></div>
               </div>
             ))}
-            {Object.keys(expensesByCategory).length === 0 && <p className="text-gray-500 text-sm">Nenhuma despesa registrada ainda.</p>}
           </div>
         </div>
+
+        <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
+          <h3 className="text-xl font-medium mb-6">Resumo por barbeiro</h3>
+          <div className="space-y-4 max-h-[420px] overflow-y-auto pr-2">
+            {data.summary_by_barber.map((entry) => (
+              <div key={entry.barber_id || entry.barber_name} className="rounded-2xl border border-white/5 bg-black/20 p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-white font-medium">{entry.barber_name}</span>
+                  <span className="text-xs uppercase tracking-widest text-gray-500">{entry.total_appointments} atendimentos</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-xl bg-white/5 p-3">
+                    <p className="text-gray-400">Assinantes</p>
+                    <p className="mt-1 text-white">{entry.subscriber_appointments} atend.</p>
+                    <p className="text-emerald-400 font-bold">{formatCurrency(entry.subscriber_revenue)}</p>
+                  </div>
+                  <div className="rounded-xl bg-white/5 p-3">
+                    <p className="text-gray-400">Avulsos</p>
+                    <p className="mt-1 text-white">{entry.non_subscriber_appointments} atend.</p>
+                    <p className="text-emerald-400 font-bold">{formatCurrency(entry.non_subscriber_revenue)}</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {data.summary_by_barber.length === 0 && <p className="text-sm text-gray-500">Nenhum barbeiro encontrado para o filtro atual.</p>}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5">
+              <th className="px-8 py-6 font-medium">Data</th>
+              <th className="px-8 py-6 font-medium">Cliente</th>
+              <th className="px-8 py-6 font-medium">Barbeiro</th>
+              <th className="px-8 py-6 font-medium">Tipo cliente</th>
+              <th className="px-8 py-6 font-medium">Modo cobrança</th>
+              <th className="px-8 py-6 font-medium">Valor final</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {data.rows.map((row) => (
+              <tr key={row.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors">
+                <td className="px-8 py-6 text-white font-medium">{new Date(row.date).toLocaleDateString('pt-BR')}</td>
+                <td className="px-8 py-6">{row.customer_name}</td>
+                <td className="px-8 py-6">{row.barber_name}</td>
+                <td className="px-8 py-6"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', row.customer_type === 'subscriber' ? 'bg-blue-500/10 text-blue-300' : 'bg-white/10 text-gray-300')}>{formatCustomerType(row.customer_type)}</span></td>
+                <td className="px-8 py-6">{formatBillingMode(row.billing_mode)}</td>
+                <td className="px-8 py-6 text-emerald-400 font-bold">{formatCurrency(row.final_amount)}</td>
+              </tr>
+            ))}
+            {data.rows.length === 0 && (
+              <tr><td colSpan={6} className="px-8 py-12 text-center text-gray-500">Nenhum atendimento encontrado para os filtros atuais.</td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

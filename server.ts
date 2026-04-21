@@ -1353,6 +1353,36 @@ const getServiceCatalogItem = async (serviceId: number) => {
   return data || null;
 };
 
+const getPublicServicesCatalog = async () => {
+  if (!supabase) return [];
+
+  const baseQuery = (columns: string) => supabase
+    .from('services_catalog')
+    .select(columns)
+    .eq('active', true)
+    .order('name', { ascending: true });
+
+  let { data, error } = await baseQuery('id, name, duration_minutes, price, category, active, image_url');
+
+  if (error && String(error.message || '').toLowerCase().includes('image_url')) {
+    const fallbackResult = await baseQuery('id, name, duration_minutes, price, category, active');
+    data = fallbackResult.data;
+    error = fallbackResult.error;
+  }
+
+  if (error) throw error;
+
+  return (data || []).map((service: any) => ({
+    id: Number(service.id),
+    name: String(service.name || ''),
+    duration_minutes: Number(service.duration_minutes || 0),
+    price: Number(service.price || 0),
+    category: String(service.category || 'Avulso'),
+    active: service.active !== false,
+    image_url: service?.image_url || null,
+  }));
+};
+
 const getCustomerById = async (customerId: number) => {
   if (!supabase || !customerId) return null;
 
@@ -2690,22 +2720,148 @@ async function startServer() {
 
   // DRE (Lucro Real)
   app.get("/api/reports/financial", async (req, res) => {
-    const { data: services } = await supabase.from('services').select('price, commission_amount');
-    const { data: sales } = await supabase.from('sales').select('total_price');
-    const { data: expenses } = await supabase.from('expenses').select('amount');
-    
-    const revenue = (services?.reduce((acc, s) => acc + s.price, 0) || 0) + 
-                    (sales?.reduce((acc, s) => acc + s.total_price, 0) || 0);
-    
-    const commissions = services?.reduce((acc, s) => acc + s.commission_amount, 0) || 0;
-    const totalExpenses = (expenses?.reduce((acc, e) => acc + e.amount, 0) || 0) + commissions;
-    
-    res.json({
-      revenue,
-      expenses: totalExpenses,
-      profit: revenue - totalExpenses,
-      margin: revenue > 0 ? ((revenue - totalExpenses) / revenue) * 100 : 0
-    });
+    try {
+      const start = typeof req.query.start === 'string' ? toValidDate(req.query.start) : null;
+      const end = typeof req.query.end === 'string' ? toValidDate(req.query.end) : null;
+      const barberId = Number(req.query.barberId || 0) || null;
+      const customerTypeFilter = typeof req.query.customerType === 'string'
+        ? normalizeCustomerType(req.query.customerType)
+        : null;
+      const billingModeFilter = String(req.query.billingMode || req.query.billing_mode || '').trim().toLowerCase() || null;
+
+      let appointmentsQuery = supabase
+        .from('appointments')
+        .select('*')
+        .in('status', ['confirmed', 'completed'])
+        .order('appointment_date', { ascending: false });
+
+      if (start) {
+        appointmentsQuery = appointmentsQuery.gte('appointment_date', start.toISOString());
+      }
+
+      if (end) {
+        appointmentsQuery = appointmentsQuery.lte('appointment_date', end.toISOString());
+      }
+
+      if (barberId) {
+        appointmentsQuery = appointmentsQuery.eq('barber_id', barberId);
+      }
+
+      const { data: appointments, error: appointmentsError } = await appointmentsQuery;
+      if (appointmentsError) throw appointmentsError;
+
+      const hydratedAppointments = await hydrateAppointmentsDisplayRelations(appointments || []);
+      const financialRows = hydratedAppointments
+        .filter((appointment: any) => !isBlockedServiceType(appointment?.service_type))
+        .map((appointment: any) => {
+          const customerType = normalizeCustomerType(appointment?.customer_type_snapshot);
+          const billingMode = String(appointment?.pricing_mode || 'service_charge').trim().toLowerCase() || 'service_charge';
+          const finalAmount = Number(appointment?.quoted_price || 0);
+
+          return {
+            id: Number(appointment.id),
+            barber_id: Number(appointment.barber_id || 0),
+            date: appointment.appointment_date,
+            customer_name: appointment.customer_name || 'Sem cliente',
+            barber_name: appointment.barber_name || 'Sem barbeiro',
+            customer_type: customerType,
+            billing_mode: billingMode,
+            final_amount: finalAmount,
+            quoted_price: finalAmount,
+          };
+        })
+        .filter((appointment) => !customerTypeFilter || appointment.customer_type === customerTypeFilter)
+        .filter((appointment) => !billingModeFilter || appointment.billing_mode === billingModeFilter);
+
+      const revenueTotal = financialRows.reduce((acc, appointment) => acc + appointment.final_amount, 0);
+      const subscriberRows = financialRows.filter((appointment) => appointment.customer_type === 'subscriber');
+      const nonSubscriberRows = financialRows.filter((appointment) => appointment.customer_type === 'non_subscriber');
+      const revenueSubscribers = subscriberRows.reduce((acc, appointment) => acc + appointment.final_amount, 0);
+      const revenueNonSubscribers = nonSubscriberRows.reduce((acc, appointment) => acc + appointment.final_amount, 0);
+      const avgTicketSubscribers = subscriberRows.length ? revenueSubscribers / subscriberRows.length : 0;
+      const avgTicketNonSubscribers = nonSubscriberRows.length ? revenueNonSubscribers / nonSubscriberRows.length : 0;
+      const nonSubscriberShare = revenueTotal > 0 ? (revenueNonSubscribers / revenueTotal) * 100 : 0;
+
+      const summaryByCustomerType = [
+        {
+          customer_type: 'subscriber',
+          total_appointments: subscriberRows.length,
+          revenue: revenueSubscribers,
+          avg_ticket: avgTicketSubscribers,
+        },
+        {
+          customer_type: 'non_subscriber',
+          total_appointments: nonSubscriberRows.length,
+          revenue: revenueNonSubscribers,
+          avg_ticket: avgTicketNonSubscribers,
+        },
+      ];
+
+      const barberSummaryMap = new Map<number, {
+        barber_id: number;
+        barber_name: string;
+        subscriber_appointments: number;
+        subscriber_revenue: number;
+        non_subscriber_appointments: number;
+        non_subscriber_revenue: number;
+      }>();
+
+      financialRows.forEach((appointment) => {
+        const entry = barberSummaryMap.get(appointment.barber_id) || {
+          barber_id: appointment.barber_id,
+          barber_name: appointment.barber_name,
+          subscriber_appointments: 0,
+          subscriber_revenue: 0,
+          non_subscriber_appointments: 0,
+          non_subscriber_revenue: 0,
+        };
+
+        if (appointment.customer_type === 'subscriber') {
+          entry.subscriber_appointments += 1;
+          entry.subscriber_revenue += appointment.final_amount;
+        } else {
+          entry.non_subscriber_appointments += 1;
+          entry.non_subscriber_revenue += appointment.final_amount;
+        }
+
+        barberSummaryMap.set(appointment.barber_id, entry);
+      });
+
+      const summaryByBarber = Array.from(barberSummaryMap.values()).map((entry) => ({
+        barber_id: entry.barber_id,
+        barber_name: entry.barber_name,
+        total_appointments: entry.subscriber_appointments + entry.non_subscriber_appointments,
+        total_revenue: entry.subscriber_revenue + entry.non_subscriber_revenue,
+        subscriber_appointments: entry.subscriber_appointments,
+        subscriber_revenue: entry.subscriber_revenue,
+        subscriber_avg_ticket: entry.subscriber_appointments ? entry.subscriber_revenue / entry.subscriber_appointments : 0,
+        non_subscriber_appointments: entry.non_subscriber_appointments,
+        non_subscriber_revenue: entry.non_subscriber_revenue,
+        non_subscriber_avg_ticket: entry.non_subscriber_appointments ? entry.non_subscriber_revenue / entry.non_subscriber_appointments : 0,
+      }));
+
+      res.json({
+        revenue_total: revenueTotal,
+        revenue_subscribers: revenueSubscribers,
+        revenue_non_subscribers: revenueNonSubscribers,
+        avg_ticket_subscribers: avgTicketSubscribers,
+        avg_ticket_non_subscribers: avgTicketNonSubscribers,
+        non_subscriber_share: nonSubscriberShare,
+        total_appointments: financialRows.length,
+        filters: {
+          start: start?.toISOString() || null,
+          end: end?.toISOString() || null,
+          barber_id: barberId,
+          customer_type: customerTypeFilter,
+          billing_mode: billingModeFilter,
+        },
+        rows: financialRows,
+        summary_by_customer_type: summaryByCustomerType,
+        summary_by_barber: summaryByBarber,
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Falha ao gerar o relatório financeiro.' });
+    }
   });
 
   // --- Public Booking Routes ---
@@ -2716,8 +2872,12 @@ async function startServer() {
   });
 
   app.get("/api/public/services", async (req, res) => {
-    const { data } = await supabase.from('services_catalog').select('*').eq('active', true).order('name');
-    res.json(data || []);
+    try {
+      const data = await getPublicServicesCatalog();
+      res.json(data || []);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Falha ao carregar serviços públicos.' });
+    }
   });
 
   app.post("/api/public/check-subscription", async (req, res) => {
