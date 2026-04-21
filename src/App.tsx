@@ -1953,7 +1953,46 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
   }, [selectedBarber, selectedDate, selectedService?.duration_minutes]);
 
   const handleConfirm = async () => {
-    if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone || !clientData.email || !bookingProof) return;
+    if (!selectedService) {
+      setBookingError('Selecione um servico antes de confirmar.');
+      return;
+    }
+
+    if (!selectedBarber) {
+      setBookingError('Selecione um barbeiro antes de confirmar.');
+      return;
+    }
+
+    if (!selectedDate) {
+      setBookingError('Selecione uma data antes de confirmar.');
+      return;
+    }
+
+    if (!selectedTime) {
+      setBookingError('Selecione um horario antes de confirmar.');
+      return;
+    }
+
+    if (!clientData.name.trim()) {
+      setBookingError('Informe o nome do cliente.');
+      return;
+    }
+
+    if (!clientData.phone.trim()) {
+      setBookingError('Informe o telefone do cliente.');
+      return;
+    }
+
+    if (!clientData.email.trim()) {
+      setBookingError('Valide a assinatura antes de confirmar o agendamento.');
+      return;
+    }
+
+    if (!bookingProof) {
+      setBookingError('A validacao da assinatura expirou. Refaça a identificacao.');
+      return;
+    }
+
     setLoading(true);
     setBookingError('');
     try {

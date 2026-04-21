@@ -275,6 +275,42 @@ const withLegacyAppointmentTimeColumns = async (payload: Record<string, any>) =>
   };
 };
 
+const withLegacyAppointmentRelationColumns = async (payload: Record<string, any>) => {
+  if (!payload) return payload;
+
+  const [hasClientId, hasProfessionalId, hasServiceId] = await Promise.all([
+    Object.prototype.hasOwnProperty.call(payload, "customer_id") ? hasAppointmentColumn("client_id") : Promise.resolve(false),
+    Object.prototype.hasOwnProperty.call(payload, "barber_id") ? hasAppointmentColumn("professional_id") : Promise.resolve(false),
+    Object.prototype.hasOwnProperty.call(payload, "service_id") ? hasAppointmentColumn("service_id") : Promise.resolve(false),
+  ]);
+
+  return {
+    ...payload,
+    ...(hasClientId ? { client_id: payload.customer_id } : {}),
+    ...(hasProfessionalId ? { professional_id: payload.barber_id } : {}),
+    ...(hasServiceId ? { service_id: payload.service_id } : {}),
+  };
+};
+
+const withPersistedAppointmentCompatibility = async (payload: Record<string, any>) => {
+  const withLegacyRelations = await withLegacyAppointmentRelationColumns(payload);
+  return withLegacyAppointmentTimeColumns(withLegacyRelations);
+};
+
+const ensureAppointmentLinkColumns = async () => {
+  const [hasCustomerId, hasBarberId, hasServiceId] = await Promise.all([
+    hasAppointmentColumn("customer_id"),
+    hasAppointmentColumn("barber_id"),
+    hasAppointmentColumn("service_id"),
+  ]);
+
+  if (!hasCustomerId || !hasBarberId || !hasServiceId) {
+    throw new Error(
+      "A base ativa ainda nao possui todas as colunas obrigatorias de vinculo em appointments. Execute a migration 20260421_booking_required_links.sql no Supabase e tente novamente."
+    );
+  }
+};
+
 const normalizeLegacyNumericId = (value: any) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value);
@@ -369,7 +405,16 @@ const normalizeAppointmentsWriteError = (error: any) => {
     message.includes("not-null constraint")
   ) {
     return new Error(
-      "A base ativa ainda exige service_id na tabela appointments. Execute a migration 20260327_appointments_legacy_service_id_compat.sql no Supabase e tente novamente."
+      "A base ativa ainda exige service_id na tabela appointments. Execute a migration 20260421_booking_required_links.sql no Supabase e tente novamente."
+    );
+  }
+
+  if (
+    message.toLowerCase().includes('service_id') &&
+    (message.toLowerCase().includes('does not exist') || message.toLowerCase().includes('schema cache'))
+  ) {
+    return new Error(
+      "A base ativa ainda nao possui a coluna service_id em appointments. Execute a migration 20260421_booking_required_links.sql no Supabase e tente novamente."
     );
   }
 
@@ -2529,6 +2574,8 @@ async function startServer() {
     const date = String(req.body?.date || '').trim();
     const time = String(req.body?.time || '').trim();
     const clientData = req.body?.clientData || {};
+    const clientName = String(clientData.name || '').trim();
+    const clientPhone = String(clientData.phone || '').trim();
 
     if (!bookingProof) {
       return res.status(401).json({ error: 'Valide sua assinatura antes de concluir o agendamento.' });
@@ -2539,11 +2586,45 @@ async function startServer() {
       return res.status(401).json({ error: 'A validacao da assinatura expirou. Refaça a identificacao.' });
     }
 
+    if (!serviceId) {
+      return res.status(400).json({ error: 'Servico obrigatorio.' });
+    }
+
+    if (!barberId) {
+      return res.status(400).json({ error: 'Barbeiro obrigatorio.' });
+    }
+
+    if (!date) {
+      return res.status(400).json({ error: 'Data obrigatoria.' });
+    }
+
+    if (!time) {
+      return res.status(400).json({ error: 'Horario obrigatorio.' });
+    }
+
+    if (!clientName) {
+      return res.status(400).json({ error: 'Nome do cliente obrigatorio.' });
+    }
+
+    if (!clientPhone) {
+      return res.status(400).json({ error: 'Telefone do cliente obrigatorio.' });
+    }
+
+    if (!Number.isInteger(serviceId) || serviceId <= 0) {
+      return res.status(400).json({ error: 'Servico invalido.' });
+    }
+
+    if (!Number.isInteger(barberId) || barberId <= 0) {
+      return res.status(400).json({ error: 'Barbeiro invalido.' });
+    }
+
     if (!serviceId || !barberId || !date || !time) {
       return res.status(400).json({ error: 'Servico, barbeiro, data e horario sao obrigatorios.' });
     }
 
     try {
+      await ensureAppointmentLinkColumns();
+
       const activeEmail = await resolveActiveSubscriptionEmail(String(proofPayload.email));
       if (!activeEmail || activeEmail !== String(proofPayload.email)) {
         return res.status(403).json({ error: 'Sua assinatura nao esta mais ativa para este agendamento.' });
@@ -2557,6 +2638,20 @@ async function startServer() {
 
       if (serviceError || !service || service.active === false) {
         return res.status(404).json({ error: 'Servico nao encontrado ou indisponivel.' });
+      }
+
+      const { data: barber, error: barberError } = await supabase
+        .from('barbers')
+        .select('id, active')
+        .eq('id', barberId)
+        .maybeSingle();
+
+      if (barberError) {
+        throw barberError;
+      }
+
+      if (!barber?.id || barber.active === false) {
+        return res.status(404).json({ error: 'Barbeiro nao encontrado ou indisponivel.' });
       }
 
       const availableSlots = await computeAvailableSlotsForBarberDate({
@@ -2576,18 +2671,23 @@ async function startServer() {
 
       const end = addMinutes(start, Math.max(15, Number(service.duration_minutes || 60) || 60));
       const customerId = await findOrCreateCustomer({
-        name: String(clientData.name || '').trim(),
+        name: clientName,
         email: activeEmail,
-        phone: String(clientData.phone || '').trim(),
+        phone: clientPhone,
       });
 
-      const insertPayload = await withLegacyAppointmentTimeColumns({
+      if (!customerId || !barber.id || !service.id) {
+        return res.status(400).json({ error: 'Nao foi possivel resolver os vinculos obrigatorios do agendamento.' });
+      }
+
+      const insertPayload = await withPersistedAppointmentCompatibility({
         customer_id: customerId,
         barber_id: barberId,
+        service_id: Number(service.id),
         service_type: String(service.name || '').trim(),
         appointment_date: start.toISOString(),
         appointment_end: end.toISOString(),
-        status: 'pending',
+        status: 'confirmed',
         sync_origin: 'local',
       });
 
@@ -2598,15 +2698,36 @@ async function startServer() {
 
       if (error) throw normalizeAppointmentsWriteError(error);
 
+      const persistedAppointment = data?.[0];
+      if (!persistedAppointment?.id) {
+        throw new Error('Falha ao confirmar o agendamento publico. Registro nao retornado.');
+      }
+
+      if (!persistedAppointment?.customer_id || !persistedAppointment?.barber_id || !persistedAppointment?.service_id) {
+        throw new Error('Falha ao persistir os vinculos obrigatorios do agendamento publico.');
+      }
+
       try {
-        await syncAppointmentToGoogleCalendar(data?.[0]?.id);
+        await syncAppointmentToGoogleCalendar(persistedAppointment.id);
       } catch (syncError) {
         console.error('Erro ao sincronizar agendamento publico com Google:', syncError);
       }
 
-      return res.json({ id: data?.[0]?.id || null, success: true });
+      return res.json({
+        id: persistedAppointment.id,
+        customerId: persistedAppointment.customer_id,
+        barberId: persistedAppointment.barber_id,
+        serviceId: persistedAppointment.service_id,
+        success: true,
+      });
     } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Falha ao concluir o agendamento publico.' });
+      const message = String(error?.message || 'Falha ao concluir o agendamento publico.');
+      const isValidationError =
+        message.includes('obrigatorio') ||
+        message.includes('vinculos obrigatorios') ||
+        message.includes('invalido');
+
+      return res.status(isValidationError ? 400 : 500).json({ error: message });
     }
   });
 

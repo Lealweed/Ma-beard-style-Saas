@@ -71,6 +71,7 @@ with expected_columns as (
       ('appointments', 'id'),
       ('appointments', 'customer_id'),
       ('appointments', 'barber_id'),
+      ('appointments', 'service_id'),
       ('appointments', 'service_type'),
       ('appointments', 'appointment_date'),
       ('appointments', 'appointment_end'),
