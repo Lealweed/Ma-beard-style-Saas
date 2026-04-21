@@ -17,7 +17,7 @@ import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseCon
 import { Session } from '@supabase/supabase-js';
 import { GoogleCalendarPage, LegalPage } from './legal';
 import AppointmentsManagerMonthly from './appointments-monthly';
-import { ServicesPage } from './services';
+import ServicesPage from './services';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -1963,15 +1963,19 @@ const FinancialReport = () => {
     billingMode: '',
   });
 
-  const formatCurrency = (value: number) => `R$ ${Number(value || 0).toFixed(2)}`;
-  const formatCustomerType = (value: string) => value === 'subscriber' ? 'Assinante' : 'Avulso';
+  const formatCurrency = (value: number) => `R$ ${Number(value ?? 0).toFixed(2)}`;
+  const formatCustomerType = (value: string) => String(value ?? '') === 'subscriber' ? 'Assinante' : 'Avulso';
   const formatBillingMode = (value: string) => (
-    value === 'plan_covered'
+    String(value ?? '') === 'plan_covered'
       ? 'Coberto pelo plano'
-      : value === 'custom'
+      : String(value ?? '') === 'custom'
         ? 'Preço customizado'
         : 'Cobrança avulsa'
   );
+
+  const summaryByCustomerType = data?.summary_by_customer_type ?? [];
+  const summaryByBarber = data?.summary_by_barber ?? [];
+  const rows = data?.rows ?? [];
 
   useEffect(() => {
     fetch('/api/barbers').then(r => r.json()).then(d => setBarbers(Array.isArray(d) ? d : []));
@@ -1994,17 +1998,38 @@ const FinancialReport = () => {
         if (!response.ok) {
           throw new Error(String((payload as any)?.error || 'Falha ao carregar relatório financeiro.'));
         }
-        setData(payload);
+        setData({
+          revenue_total: Number((payload as any)?.revenue_total ?? 0),
+          revenue_subscribers: Number((payload as any)?.revenue_subscribers ?? 0),
+          revenue_non_subscribers: Number((payload as any)?.revenue_non_subscribers ?? 0),
+          avg_ticket_subscribers: Number((payload as any)?.avg_ticket_subscribers ?? 0),
+          avg_ticket_non_subscribers: Number((payload as any)?.avg_ticket_non_subscribers ?? 0),
+          non_subscriber_share: Number((payload as any)?.non_subscriber_share ?? 0),
+          total_appointments: Number((payload as any)?.total_appointments ?? 0),
+          rows: Array.isArray((payload as any)?.rows) ? (payload as any).rows : [],
+          summary_by_customer_type: Array.isArray((payload as any)?.summary_by_customer_type) ? (payload as any).summary_by_customer_type : [],
+          summary_by_barber: Array.isArray((payload as any)?.summary_by_barber) ? (payload as any).summary_by_barber : [],
+        });
       })
       .catch((requestError: any) => {
-        setData(null);
+        setData({
+          revenue_total: 0,
+          revenue_subscribers: 0,
+          revenue_non_subscribers: 0,
+          avg_ticket_subscribers: 0,
+          avg_ticket_non_subscribers: 0,
+          non_subscriber_share: 0,
+          total_appointments: 0,
+          rows: [],
+          summary_by_customer_type: [],
+          summary_by_barber: [],
+        });
         setError(requestError?.message || 'Falha ao carregar relatório financeiro.');
       })
       .finally(() => setLoading(false));
   }, [filters]);
 
   if (loading && !data) return <div className="text-white">Carregando relatório financeiro...</div>;
-  if (error && !data) return <div className="text-red-300">{error}</div>;
   if (!data) return <div className="text-white">Nenhum dado financeiro disponível.</div>;
 
   return (
@@ -2050,14 +2075,14 @@ const FinancialReport = () => {
         <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
           <h3 className="text-xl font-medium mb-6">Resumo por tipo de cliente</h3>
           <div className="space-y-4">
-            {data.summary_by_customer_type.map((entry) => (
+            {(summaryByCustomerType ?? []).map((entry) => (
               <div key={entry.customer_type} className="rounded-2xl border border-white/5 bg-black/20 p-4 space-y-2">
                 <div className="flex justify-between items-center">
-                  <span className="text-white font-medium">{formatCustomerType(entry.customer_type)}</span>
-                  <span className="text-xs uppercase tracking-widest text-gray-500">{entry.total_appointments} atendimentos</span>
+                  <span className="text-white font-medium">{formatCustomerType(String(entry?.customer_type ?? ''))}</span>
+                  <span className="text-xs uppercase tracking-widest text-gray-500">{Number(entry?.total_appointments ?? 0)} atendimentos</span>
                 </div>
-                <div className="flex justify-between text-sm"><span className="text-gray-400">Faturamento</span><span className="text-emerald-400 font-bold">{formatCurrency(entry.revenue)}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-gray-400">Ticket médio</span><span className="text-white">{formatCurrency(entry.avg_ticket)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Faturamento</span><span className="text-emerald-400 font-bold">{formatCurrency(Number(entry?.revenue ?? 0))}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Ticket médio</span><span className="text-white">{formatCurrency(Number(entry?.avg_ticket ?? 0))}</span></div>
               </div>
             ))}
           </div>
@@ -2066,27 +2091,27 @@ const FinancialReport = () => {
         <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] p-8">
           <h3 className="text-xl font-medium mb-6">Resumo por barbeiro</h3>
           <div className="space-y-4 max-h-[420px] overflow-y-auto pr-2">
-            {data.summary_by_barber.map((entry) => (
-              <div key={entry.barber_id || entry.barber_name} className="rounded-2xl border border-white/5 bg-black/20 p-4 space-y-3">
+            {(summaryByBarber ?? []).map((entry) => (
+              <div key={Number(entry?.barber_id ?? 0) || String(entry?.barber_name ?? '')} className="rounded-2xl border border-white/5 bg-black/20 p-4 space-y-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-white font-medium">{entry.barber_name}</span>
-                  <span className="text-xs uppercase tracking-widest text-gray-500">{entry.total_appointments} atendimentos</span>
+                  <span className="text-white font-medium">{String(entry?.barber_name ?? 'Sem barbeiro')}</span>
+                  <span className="text-xs uppercase tracking-widest text-gray-500">{Number(entry?.total_appointments ?? 0)} atendimentos</span>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="rounded-xl bg-white/5 p-3">
                     <p className="text-gray-400">Assinantes</p>
-                    <p className="mt-1 text-white">{entry.subscriber_appointments} atend.</p>
-                    <p className="text-emerald-400 font-bold">{formatCurrency(entry.subscriber_revenue)}</p>
+                    <p className="mt-1 text-white">{Number(entry?.subscriber_appointments ?? 0)} atend.</p>
+                    <p className="text-emerald-400 font-bold">{formatCurrency(Number(entry?.subscriber_revenue ?? 0))}</p>
                   </div>
                   <div className="rounded-xl bg-white/5 p-3">
                     <p className="text-gray-400">Avulsos</p>
-                    <p className="mt-1 text-white">{entry.non_subscriber_appointments} atend.</p>
-                    <p className="text-emerald-400 font-bold">{formatCurrency(entry.non_subscriber_revenue)}</p>
+                    <p className="mt-1 text-white">{Number(entry?.non_subscriber_appointments ?? 0)} atend.</p>
+                    <p className="text-emerald-400 font-bold">{formatCurrency(Number(entry?.non_subscriber_revenue ?? 0))}</p>
                   </div>
                 </div>
               </div>
             ))}
-            {data.summary_by_barber.length === 0 && <p className="text-sm text-gray-500">Nenhum barbeiro encontrado para o filtro atual.</p>}
+            {Number((summaryByBarber ?? []).length ?? 0) === 0 && <p className="text-sm text-gray-500">Nenhum barbeiro encontrado para o filtro atual.</p>}
           </div>
         </div>
       </div>
@@ -2104,17 +2129,17 @@ const FinancialReport = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {data.rows.map((row) => (
+            {(rows ?? []).map((row) => (
               <tr key={row.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors">
-                <td className="px-8 py-6 text-white font-medium">{new Date(row.date).toLocaleDateString('pt-BR')}</td>
-                <td className="px-8 py-6">{row.customer_name}</td>
-                <td className="px-8 py-6">{row.barber_name}</td>
-                <td className="px-8 py-6"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', row.customer_type === 'subscriber' ? 'bg-blue-500/10 text-blue-300' : 'bg-white/10 text-gray-300')}>{formatCustomerType(row.customer_type)}</span></td>
-                <td className="px-8 py-6">{formatBillingMode(row.billing_mode)}</td>
-                <td className="px-8 py-6 text-emerald-400 font-bold">{formatCurrency(row.final_amount)}</td>
+                <td className="px-8 py-6 text-white font-medium">{(row?.date ?? '') ? new Date(String(row?.date ?? '')).toLocaleDateString('pt-BR') : '-'}</td>
+                <td className="px-8 py-6">{String(row?.customer_name ?? 'Sem cliente')}</td>
+                <td className="px-8 py-6">{String(row?.barber_name ?? 'Sem barbeiro')}</td>
+                <td className="px-8 py-6"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', String(row?.customer_type ?? '') === 'subscriber' ? 'bg-blue-500/10 text-blue-300' : 'bg-white/10 text-gray-300')}>{formatCustomerType(String(row?.customer_type ?? ''))}</span></td>
+                <td className="px-8 py-6">{formatBillingMode(String(row?.billing_mode ?? ''))}</td>
+                <td className="px-8 py-6 text-emerald-400 font-bold">{formatCurrency(Number(row?.final_amount ?? 0))}</td>
               </tr>
             ))}
-            {data.rows.length === 0 && (
+            {Number((rows ?? []).length ?? 0) === 0 && (
               <tr><td colSpan={6} className="px-8 py-12 text-center text-gray-500">Nenhum atendimento encontrado para os filtros atuais.</td></tr>
             )}
           </tbody>

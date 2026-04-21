@@ -22,6 +22,16 @@ type ServiceItem = {
 
 const formatCurrency = (value: number) => `R$ ${Number(value || 0).toFixed(2).replace('.', ',')}`;
 
+const normalizeServiceItem = (item: any): ServiceItem => ({
+  id: Number(item?.id ?? 0),
+  name: String(item?.name ?? ''),
+  duration_minutes: Number(item?.duration_minutes ?? 0),
+  price: Number(item?.price ?? 0),
+  category: String(item?.category ?? 'Avulso'),
+  image_url: item?.image_url ?? null,
+  active: item?.active !== false,
+});
+
 const ServiceThumbnail = ({ service }: { service: ServiceItem }) => {
   const isPackage = service.category === 'Pacote';
 
@@ -80,7 +90,7 @@ const ServiceCard = ({ service }: { key?: Key; service: ServiceItem }) => {
   );
 };
 
-export const ServicesPage = () => {
+const ServicesPage = () => {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [query, setQuery] = useState('');
   const [activeView, setActiveView] = useState<ServicesView>('services');
@@ -99,7 +109,7 @@ export const ServicesPage = () => {
         throw new Error(String((data as any)?.error || 'Não foi possível carregar os serviços agora.'));
       }
 
-      setServices(Array.isArray(data) ? data : []);
+      setServices(Array.isArray(data) ? data.map(normalizeServiceItem) : []);
     } catch (fetchError: any) {
       setServices([]);
       setError(fetchError?.message || 'Não foi possível carregar os serviços agora.');
@@ -115,21 +125,21 @@ export const ServicesPage = () => {
   const filteredServices = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return services.filter((service) => {
+    return (services ?? []).filter((service) => {
       const matchesTab = activeView === 'services'
-        ? service.category !== 'Pacote'
-        : service.category === 'Pacote';
+        ? (service?.category ?? 'Avulso') !== 'Pacote'
+        : (service?.category ?? 'Avulso') === 'Pacote';
 
       if (!matchesTab) return false;
       if (!normalizedQuery) return true;
 
-      const searchable = `${service.name} ${service.category || 'Serviços'}`.toLowerCase();
+      const searchable = `${service?.name ?? ''} ${service?.category ?? 'Serviços'}`.toLowerCase();
       return searchable.includes(normalizedQuery);
     });
   }, [activeView, query, services]);
 
-  const packagesCount = services.filter((service) => service.category === 'Pacote').length;
-  const servicesCount = services.length - packagesCount;
+  const packagesCount = (services ?? []).filter((service) => (service?.category ?? 'Avulso') === 'Pacote').length;
+  const servicesCount = Number((services ?? []).length ?? 0) - packagesCount;
 
   return (
     <div className="min-h-screen bg-[#f6f2ff] pb-28 pt-24 text-slate-900">
@@ -146,7 +156,7 @@ export const ServicesPage = () => {
               </div>
               <div className="rounded-[24px] border border-white/20 bg-white/15 px-4 py-3 text-right backdrop-blur-sm">
                 <p className="text-[11px] uppercase tracking-[0.22em] text-violet-100/80">Itens</p>
-                <p className="mt-1 text-2xl font-semibold">{services.length}</p>
+                <p className="mt-1 text-2xl font-semibold">{Number((services ?? []).length ?? 0)}</p>
               </div>
             </div>
           </div>
@@ -185,18 +195,18 @@ export const ServicesPage = () => {
               </div>
             )}
 
-            {!loading && !error && filteredServices.map((service) => (
+            {!loading && !error && (filteredServices ?? []).map((service) => (
               <ServiceCard key={service.id} service={service} />
             ))}
 
-            {!loading && !error && services.length === 0 && (
+            {!loading && !error && Number((services ?? []).length ?? 0) === 0 && (
               <div className="rounded-[28px] border border-dashed border-violet-200 bg-white/80 px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
                 <p className="text-sm font-medium text-slate-700">Nenhum serviço ativo disponível.</p>
                 <p className="mt-2 text-sm text-slate-500">Publique serviços ativos no catálogo para exibir nesta página.</p>
               </div>
             )}
 
-            {!loading && !error && services.length > 0 && filteredServices.length === 0 && (
+            {!loading && !error && Number((services ?? []).length ?? 0) > 0 && Number((filteredServices ?? []).length ?? 0) === 0 && (
               <div className="rounded-[28px] border border-dashed border-violet-200 bg-white/80 px-5 py-10 text-center shadow-[0_10px_24px_rgba(109,40,217,0.05)]">
                 <p className="text-sm font-medium text-slate-700">Nenhum resultado encontrado.</p>
                 <p className="mt-2 text-sm text-slate-500">Tente buscar pelo nome do serviço ou pela categoria Pacote.</p>
@@ -237,3 +247,5 @@ export const ServicesPage = () => {
     </div>
   );
 };
+
+export default ServicesPage;
