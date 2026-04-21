@@ -47,6 +47,13 @@ with expected_columns as (
       ('products', 'stock'),
       ('products', 'min_stock'),
 
+      ('services_catalog', 'id'),
+      ('services_catalog', 'name'),
+      ('services_catalog', 'price'),
+      ('services_catalog', 'duration_minutes'),
+      ('services_catalog', 'active'),
+      ('services_catalog', 'category'),
+
       ('services', 'id'),
       ('services', 'barber_id'),
       ('services', 'customer_name'),
@@ -66,7 +73,9 @@ with expected_columns as (
       ('appointments', 'barber_id'),
       ('appointments', 'service_type'),
       ('appointments', 'appointment_date'),
+      ('appointments', 'appointment_end'),
       ('appointments', 'status'),
+      ('appointments', 'notes'),
       ('appointments', 'created_at'),
       ('appointments', 'google_event_id'),
 
@@ -108,10 +117,47 @@ missing_tables as (
    and t.table_name = e.table_name
   where t.table_name is null
 ),
+forbidden_open_policies as (
+  select
+    schemaname,
+    tablename,
+    policyname,
+    permissive,
+    roles,
+    cmd,
+    qual,
+    with_check
+  from pg_policies
+  where (
+      (
+      schemaname = 'public'
+      and tablename in (
+        'config',
+        'customers',
+        'appointments',
+        'sales',
+        'expenses',
+        'services',
+        'services_catalog',
+        'products',
+        'stock_movements',
+        'subscriptions',
+        'plans',
+        'barbers'
+      )
+      )
+      or (schemaname = 'storage' and tablename = 'objects')
+    )
+    and (
+      coalesce(qual, '') ~* '(^|[^a-z])true([^a-z]|$)'
+      or coalesce(with_check, '') ~* '(^|[^a-z])true([^a-z]|$)'
+    )
+),
 summary as (
   select
     (select count(*) from missing_tables) as missing_tables_count,
-    (select count(*) from missing_columns) as missing_columns_count
+    (select count(*) from missing_columns) as missing_columns_count,
+    (select count(*) from forbidden_open_policies) as forbidden_open_policies_count
 )
 
 select 'SUMMARY' as section, to_jsonb(summary.*) as details
@@ -127,6 +173,19 @@ union all
 select 'MISSING_COLUMN' as section,
        jsonb_build_object('table', mc.table_name, 'column', mc.column_name) as details
 from missing_columns mc
+
+union all
+
+select 'FORBIDDEN_OPEN_POLICY' as section,
+       jsonb_build_object(
+         'schema', fp.schemaname,
+         'table', fp.tablename,
+         'policy', fp.policyname,
+         'command', fp.cmd,
+         'using', fp.qual,
+         'with_check', fp.with_check
+       ) as details
+from forbidden_open_policies fp
 
 union all
 

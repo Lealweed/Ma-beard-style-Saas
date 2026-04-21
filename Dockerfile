@@ -27,6 +27,9 @@ RUN npm ci --include=dev
 # Copy application code
 COPY . .
 
+# Validate types before building the image
+RUN npm run lint
+
 # Build application
 RUN npm run build
 

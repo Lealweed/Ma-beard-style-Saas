@@ -9,6 +9,8 @@ import path from "path";
 
 dotenv.config();
 
+const isProduction = process.env.NODE_ENV === "production";
+
 const getEnvValue = (...keys: string[]) => {
   for (const key of keys) {
     const value = process.env[key];
@@ -37,7 +39,13 @@ const GOOGLE_TOKEN_CONFIG_KEY = "google_calendar_tokens";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned";
 const GOOGLE_AUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_BOOKING_PROOF_TTL_MS = 15 * 60 * 1000;
-const SIGNING_SECRET = getEnvValue("APP_SECRET", "BOOKING_PROOF_SECRET", "SUPABASE_ANON_KEY") || "ma-beard-style-dev-secret";
+const appSecret = String(process.env.APP_SECRET || "").trim();
+
+if (isProduction && !appSecret) {
+  throw new Error("APP_SECRET e obrigatorio em producao.");
+}
+
+const SIGNING_SECRET = appSecret || String(process.env.BOOKING_PROOF_SECRET || "").trim() || crypto.randomBytes(32).toString("hex");
 
 const getGoogleRedirectUriValue = () =>
   process.env.GOOGLE_REDIRECT_URI || (process.env.APP_URL ? `${process.env.APP_URL}/api/auth/google/callback` : "");
@@ -57,12 +65,21 @@ const getGoogleRedirectUri = () => {
 };
 
 const supabaseUrl = getEnvValue("SUPABASE_URL", "VITE_SUPABASE_URL");
-const supabaseKey = getEnvValue("SUPABASE_ANON_KEY", "VITE_SUPABASE_ANON_KEY");
-const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
-const supabase = isSupabaseConfigured ? createClient(supabaseUrl, supabaseKey) : null;
+const supabaseAnonKey = getEnvValue("SUPABASE_ANON_KEY", "VITE_SUPABASE_ANON_KEY");
+const supabaseServiceRoleKey = getEnvValue("SUPABASE_SERVICE_ROLE_KEY");
+
+if (isProduction && !supabaseServiceRoleKey) {
+  throw new Error("SUPABASE_SERVICE_ROLE_KEY e obrigatoria em producao para o backend administrativo.");
+}
+
+const supabaseServerKey = supabaseServiceRoleKey || supabaseAnonKey;
+const isSupabaseConfigured = Boolean(supabaseUrl && supabaseServerKey);
+const supabase = isSupabaseConfigured ? createClient(supabaseUrl, supabaseServerKey) : null;
 
 if (!isSupabaseConfigured) {
-  console.warn("AVISO: SUPABASE_URL/SUPABASE_ANON_KEY não encontrados. APIs que dependem do Supabase falharão até configurar os secrets.");
+  console.warn("AVISO: SUPABASE_URL e uma chave de backend do Supabase nao foram encontradas. APIs que dependem do Supabase falharao ate configurar os secrets.");
+} else if (!supabaseServiceRoleKey) {
+  console.warn("AVISO: SUPABASE_SERVICE_ROLE_KEY ausente. Fora de producao o backend seguira usando a anon key e respeitando RLS.");
 }
 
 const isGoogleNotFoundError = (error: any) => {
@@ -1401,7 +1418,7 @@ async function startServer() {
     res.send(
       `window.__APP_CONFIG__ = ${JSON.stringify({
         supabaseUrl,
-        supabaseAnonKey: supabaseKey,
+        supabaseAnonKey,
       })};`
     );
   });
@@ -2591,170 +2608,6 @@ async function startServer() {
     } catch (error: any) {
       return res.status(500).json({ error: error.message || 'Falha ao concluir o agendamento publico.' });
     }
-  });
-
-  app.post("/api/public/check-subscription", async (req, res) => {
-    const rawIdentifier = String(req.body?.identifier || '').trim();
-
-    if (!rawIdentifier) {
-      return res.status(400).json({ error: 'Informe um e-mail ou CPF.' });
-    }
-
-    const normalizedEmail = rawIdentifier.toLowerCase();
-    const cpfDigits = rawIdentifier.replace(/\D/g, '');
-    const looksLikeEmail = rawIdentifier.includes('@');
-
-    let candidateEmails: string[] = [];
-
-    try {
-      if (looksLikeEmail) {
-        candidateEmails = [normalizedEmail];
-      } else {
-        const cpfVariants = Array.from(new Set([
-          rawIdentifier,
-          cpfDigits,
-          cpfDigits.length === 11
-            ? `${cpfDigits.slice(0, 3)}.${cpfDigits.slice(3, 6)}.${cpfDigits.slice(6, 9)}-${cpfDigits.slice(9)}`
-            : ''
-        ].filter(Boolean)));
-
-        if (cpfVariants.length === 0) {
-          return res.status(400).json({ error: 'CPF inválido.' });
-        }
-
-        const { data: customers, error: customerError } = await supabase
-          .from('customers')
-          .select('email')
-          .in('cpf', cpfVariants);
-
-        if (customerError) {
-          return res.status(500).json({ error: customerError.message });
-        }
-
-        candidateEmails = (customers || [])
-          .map((c: any) => String(c.email || '').trim().toLowerCase())
-          .filter(Boolean);
-      }
-
-      if (candidateEmails.length === 0) {
-        return res.json({ active: false });
-      }
-
-      for (const email of candidateEmails) {
-        const { data: subscriptions, error: subError } = await supabase
-          .from('subscriptions')
-          .select('customer_email, status')
-          .eq('status', 'active')
-          .ilike('customer_email', email)
-          .limit(1);
-
-        if (subError) {
-          return res.status(500).json({ error: subError.message });
-        }
-
-        if (subscriptions && subscriptions.length > 0) {
-          return res.json({
-            active: true,
-            email: subscriptions[0].customer_email
-          });
-        }
-      }
-
-      return res.json({ active: false });
-    } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Erro ao validar assinatura.' });
-    }
-  });
-
-  app.get("/api/public/available-slots", async (req, res) => {
-    const { barberId, date } = req.query;
-
-    if (!barberId || !date) {
-      return res.status(400).json({ error: 'Parâmetros barberId e date são obrigatórios.' });
-    }
-
-    const { data: cfgRows } = await supabase
-      .from('config')
-      .select('key, value')
-      .in('key', ['working_hours_start', 'working_hours_end', 'booking_slot_minutes']);
-
-    const cfg: Record<string, string> = {};
-    cfgRows?.forEach(r => { cfg[r.key] = r.value; });
-
-    const parseTimeToMinutes = (time: string, fallback: number) => {
-      const [hStr, mStr] = (time || '').split(':');
-      const h = Number(hStr);
-      const m = Number(mStr || '0');
-      if (!Number.isFinite(h) || !Number.isFinite(m)) return fallback;
-      return h * 60 + m;
-    };
-
-    const workingStart = parseTimeToMinutes(cfg.working_hours_start || '09:00', 9 * 60);
-    const workingEnd = parseTimeToMinutes(cfg.working_hours_end || '18:00', 18 * 60);
-    const slotMinutes = Math.max(15, Number(cfg.booking_slot_minutes || '60') || 60);
-
-    const slots: string[] = [];
-    for (let minute = workingStart; minute + slotMinutes <= workingEnd; minute += slotMinutes) {
-      const h = Math.floor(minute / 60);
-      const m = minute % 60;
-      slots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-    }
-
-    const dayStartIso = `${date}T00:00:00`;
-    const dayEndIso = `${date}T23:59:59`;
-
-    const { data: appointments } = await supabase
-      .from('appointments')
-      .select('appointment_date, appointment_end')
-      .eq('barber_id', barberId)
-      .neq('status', 'cancelled')
-      .gte('appointment_date', dayStartIso)
-      .lte('appointment_date', dayEndIso);
-
-    const busyRanges: Array<{ start: Date; end: Date }> = [];
-
-    appointments?.forEach((apt) => {
-      const start = new Date(apt.appointment_date);
-      const end = apt.appointment_end ? new Date(apt.appointment_end) : new Date(start.getTime() + slotMinutes * 60000);
-      busyRanges.push({ start, end });
-    });
-
-    try {
-      const { data: config } = await supabase.from('config').select('value').eq('key', 'google_calendar_tokens').single();
-      if (config?.value) {
-        const tokens = JSON.parse(config.value);
-        oauth2Client.setCredentials(tokens);
-        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-
-        const gcalEvents = await calendar.events.list({
-          calendarId: 'primary',
-          timeMin: new Date(`${date}T00:00:00`).toISOString(),
-          timeMax: new Date(`${date}T23:59:59`).toISOString(),
-          singleEvents: true,
-          orderBy: 'startTime',
-          maxResults: 250,
-        });
-
-        gcalEvents.data.items?.forEach((event) => {
-          if (!event.start?.dateTime || !event.end?.dateTime) return;
-          busyRanges.push({
-            start: new Date(event.start.dateTime),
-            end: new Date(event.end.dateTime),
-          });
-        });
-      }
-    } catch (error) {
-      console.warn('Falha ao buscar eventos do Google Calendar para disponibilidade:', error);
-    }
-
-    const available = slots.filter((slot) => {
-      const slotStart = new Date(`${date}T${slot}:00`);
-      const slotEnd = new Date(slotStart.getTime() + slotMinutes * 60000);
-
-      return !busyRanges.some(({ start, end }) => slotStart < end && slotEnd > start);
-    });
-
-    res.json(available);
   });
 
   // --- Google Calendar Auth ---

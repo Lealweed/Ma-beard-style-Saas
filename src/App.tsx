@@ -17,7 +17,6 @@ import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseCon
 import { Session } from '@supabase/supabase-js';
 import { GoogleCalendarPage, LegalPage } from './legal';
 import AppointmentsManagerMonthly from './appointments-monthly';
-import BookingPage from './pages/booking/index';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -1928,6 +1927,8 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
   const [bookingProof, setBookingProof] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [confirmedAppointmentId, setConfirmedAppointmentId] = useState<string>('');
+  const [bookingError, setBookingError] = useState('');
   const [checkingSubscription, setCheckingSubscription] = useState(false);
   const [subscriptionBlocked, setSubscriptionBlocked] = useState(false);
 
@@ -1954,6 +1955,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
   const handleConfirm = async () => {
     if (!selectedService || !selectedBarber || !selectedDate || !selectedTime || !clientData.name || !clientData.phone || !clientData.email || !bookingProof) return;
     setLoading(true);
+    setBookingError('');
     try {
       const bookingRes = await fetch('/api/public/book-appointment', {
         method: 'POST',
@@ -1969,9 +1971,20 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
       });
       const bookingData = await bookingRes.json().catch(() => ({}));
 
-      if (bookingRes.ok) setConfirmed(true);
-      else alert((bookingData as any)?.error || 'Erro ao confirmar agendamento. Tente novamente.');
-    } catch { alert('Erro de conexão. Tente novamente.'); }
+      if (bookingRes.ok) {
+        setConfirmedAppointmentId(String((bookingData as any)?.id || ''));
+        setConfirmed(true);
+      } else {
+        const errorMessage = String((bookingData as any)?.error || 'Erro ao confirmar agendamento. Tente novamente.');
+        setBookingError(errorMessage);
+        if (bookingRes.status === 409) {
+          setSelectedTime('');
+          setStep(5);
+        }
+      }
+    } catch {
+      setBookingError('Erro de conexao. Tente novamente.');
+    }
     finally { setLoading(false); }
   };
 
@@ -1998,6 +2011,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
           <h2 className="text-3xl font-light mb-4">Agendamento Confirmado!</h2>
           <p className="text-gray-400 mb-2">{selectedService?.name} com {selectedBarber?.name}</p>
           <p className="text-white text-lg font-medium mb-8">{new Date(`${selectedDate}T${selectedTime}:00`).toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' })}</p>
+          <p className="text-sm text-gray-500 mb-3">ID do agendamento: <span className="text-white font-medium">{confirmedAppointmentId || 'indisponivel'}</span></p>
           <p className="text-gray-500 text-sm">Você receberá um lembrete por WhatsApp. Até lá!</p>
         </motion.div>
       </div>
@@ -2224,6 +2238,11 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
           {step === 7 && (
             <div className="max-w-md mx-auto bg-zinc-900/40 border border-white/10 rounded-[2.5rem] p-8">
               <h3 className="text-xl font-medium mb-6 text-center">Confirme seu Agendamento</h3>
+              {bookingError && (
+                <div className="mb-6 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                  {bookingError}
+                </div>
+              )}
               <div className="space-y-4 mb-8">
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Serviço</span><span className="text-white font-medium">{selectedService?.name}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Barbeiro</span><span className="text-white font-medium">{selectedBarber?.name}</span></div>
@@ -3288,7 +3307,7 @@ export default function App() {
           {activeTab === 'landing' ? (
             <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'booking' ? (
-            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><BookingPage /></motion.div>
+            <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'privacy' ? (
             <motion.div key="privacy" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LegalPage variant="privacy" /></motion.div>
           ) : activeTab === 'terms' ? (

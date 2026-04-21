@@ -87,6 +87,7 @@ function ServiceCard({
   selected,
   onSelect,
 }: {
+  key?: React.Key;
   service: ServiceCatalogItem;
   selected: boolean;
   onSelect: () => void;
