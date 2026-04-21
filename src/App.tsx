@@ -54,9 +54,18 @@ interface Barber {
 interface Customer {
   id: number;
   name: string;
-  email: string;
+  email?: string;
   phone?: string;
   cpf?: string;
+  customer_type?: 'subscriber' | 'non_subscriber';
+  birth_date?: string;
+  notes?: string;
+  preferences?: string;
+  last_visit_at?: string;
+  acquisition_source?: string;
+  status?: 'active' | 'inactive';
+  photo_url?: string;
+  profile_tag?: string;
   created_at?: string;
 }
 
@@ -86,7 +95,11 @@ interface Appointment {
   id: number;
   customer_id: number | null;
   barber_id: number | null;
+  service_id?: number | null;
   service_type: string;
+  quoted_price?: number | null;
+  pricing_mode?: 'plan_covered' | 'service_charge' | 'custom';
+  customer_type_snapshot?: 'subscriber' | 'non_subscriber';
   appointment_date: string;
   appointment_end?: string | null;
   status: string;
@@ -1580,16 +1593,17 @@ const CustomerManager = () => {
 
   return (
     <div className="space-y-8">
-      <div className="flex justify-end"><button onClick={() => setEditing({ name: '', email: '', phone: '', cpf: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Cliente</button></div>
+      <div className="flex justify-end"><button onClick={() => setEditing({ name: '', email: '', phone: '', cpf: '', customer_type: 'non_subscriber', status: 'active', birth_date: '', notes: '', preferences: '', last_visit_at: '', acquisition_source: '', photo_url: '', profile_tag: '' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Cliente</button></div>
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
-          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Nome</th><th className="px-8 py-6 font-medium">E-mail</th><th className="px-8 py-6 font-medium">Telefone</th><th className="px-8 py-6 font-medium">Desde</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Cliente</th><th className="px-8 py-6 font-medium">Perfil</th><th className="px-8 py-6 font-medium">Contato</th><th className="px-8 py-6 font-medium">Origem</th><th className="px-8 py-6 font-medium">Última visita</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
           <tbody className="divide-y divide-white/5">{customers.map((customer) => (
             <tr key={customer.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
-              <td className="px-8 py-6 font-medium text-white">{customer.name}</td>
-              <td className="px-8 py-6">{customer.email}</td>
-              <td className="px-8 py-6">{customer.phone || '-'}</td>
-              <td className="px-8 py-6 text-gray-500">{customer.created_at ? new Date(customer.created_at).toLocaleDateString('pt-BR') : '-'}</td>
+              <td className="px-8 py-6 font-medium text-white"><div><p>{customer.name}</p>{customer.profile_tag && <p className="text-xs text-gray-500 mt-1">Tag: {customer.profile_tag}</p>}</div></td>
+              <td className="px-8 py-6"><div className="flex flex-col gap-1"><span className={cn('inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', customer.customer_type === 'subscriber' ? 'bg-blue-500/10 text-blue-300' : 'bg-white/10 text-gray-300')}>{customer.customer_type === 'subscriber' ? 'Assinante' : 'Avulso'}</span><span className={cn('inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', customer.status === 'inactive' ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300')}>{customer.status === 'inactive' ? 'Inativo' : 'Ativo'}</span></div></td>
+              <td className="px-8 py-6"><div><p>{customer.phone || '-'}</p><p className="text-xs text-gray-500 mt-1">{customer.email || 'Sem e-mail'}</p></div></td>
+              <td className="px-8 py-6">{customer.acquisition_source || '-'}</td>
+              <td className="px-8 py-6 text-gray-500">{customer.last_visit_at ? new Date(customer.last_visit_at).toLocaleDateString('pt-BR') : '-'}</td>
               <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                 <button onClick={() => setEditing(customer)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button>
                 <button onClick={() => handleDelete(customer.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button>
@@ -1600,13 +1614,30 @@ const CustomerManager = () => {
       </div>
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-3xl shadow-2xl overflow-y-auto max-h-[90vh]">
             <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Cliente' : 'Novo Cliente'}</h3>
-            <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <input placeholder="Nome Completo" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Telefone*" value={editing.phone || ''} onChange={e => setEditing({...editing, phone: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <input placeholder="E-mail" value={editing.email || ''} onChange={e => setEditing({...editing, email: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <input placeholder="Telefone" value={editing.phone || ''} onChange={e => setEditing({...editing, phone: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               <input placeholder="CPF" value={editing.cpf || ''} onChange={e => setEditing({...editing, cpf: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="date" value={editing.birth_date || ''} onChange={e => setEditing({...editing, birth_date: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="Origem do cliente" value={editing.acquisition_source || ''} onChange={e => setEditing({...editing, acquisition_source: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <select value={editing.customer_type || 'non_subscriber'} onChange={e => setEditing({...editing, customer_type: e.target.value as Customer['customer_type']})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                <option value="non_subscriber">Avulso</option>
+                <option value="subscriber">Assinante</option>
+              </select>
+              <select value={editing.status || 'active'} onChange={e => setEditing({...editing, status: e.target.value as Customer['status']})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm">
+                <option value="active">Ativo</option>
+                <option value="inactive">Inativo</option>
+              </select>
+              <input placeholder="Tag de perfil" value={editing.profile_tag || ''} onChange={e => setEditing({...editing, profile_tag: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input placeholder="URL da foto" value={editing.photo_url || ''} onChange={e => setEditing({...editing, photo_url: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+              <input type="datetime-local" value={editing.last_visit_at ? new Date(editing.last_visit_at).toISOString().slice(0, 16) : ''} onChange={e => setEditing({...editing, last_visit_at: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm md:col-span-2" />
+              <textarea placeholder="Preferências" value={editing.preferences || ''} onChange={e => setEditing({...editing, preferences: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm min-h-[110px] resize-none md:col-span-2" />
+              <textarea placeholder="Observações" value={editing.notes || ''} onChange={e => setEditing({...editing, notes: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm min-h-[110px] resize-none md:col-span-2" />
+            </div>
+            <div className="space-y-4 mt-4">
               <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
             </div>
           </motion.div>
@@ -1690,6 +1721,7 @@ const ReportsView = () => {
 const ServicesCatalogManager = () => {
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [editing, setEditing] = useState<Partial<ServiceCatalogItem> | null>(null);
+  const serviceCategories = ['Avulso', 'Pacote', 'Barba', 'Corte', 'Combo', 'Tratamento'];
   const fetchServices = () => fetch('/api/services-catalog').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
   useEffect(() => { fetchServices(); }, []);
 
@@ -1711,21 +1743,23 @@ const ServicesCatalogManager = () => {
   return (
     <div className="space-y-8">
       <div className="flex justify-end">
-        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '', category: 'Avulso' })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
+        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '', category: 'Avulso', active: true })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
       </div>
       <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
         <table className="w-full text-left">
-          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Serviço</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Duração</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
+          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Serviço</th><th className="px-8 py-6 font-medium">Categoria</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Duração</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
           <tbody className="divide-y divide-white/5">
             {services.map(s => (
               <tr key={s.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
                 <td className="px-8 py-6"><div><span className="font-medium text-white">{s.name}</span>{s.description && <p className="text-xs text-gray-500 mt-1">{s.description}</p>}</div></td>
+                <td className="px-8 py-6">{s.category || 'Avulso'}</td>
+                <td className="px-8 py-6"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', s.active === false ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300')}>{s.active === false ? 'Inativo' : 'Ativo'}</span></td>
                 <td className="px-8 py-6">R$ {Number(s.price).toFixed(2)}</td>
                 <td className="px-8 py-6">{s.duration_minutes} min</td>
                 <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(s)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(s.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td>
               </tr>
             ))}
-            {services.length === 0 && <tr><td colSpan={4} className="px-8 py-12 text-center text-gray-500">Nenhum serviço cadastrado.</td></tr>}
+            {services.length === 0 && <tr><td colSpan={6} className="px-8 py-12 text-center text-gray-500">Nenhum serviço cadastrado.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -1739,10 +1773,13 @@ const ServicesCatalogManager = () => {
                 <input type="number" placeholder="Preço (R$)" value={editing.price || ''} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
                                 <input type="number" placeholder="Duração (min)" value={editing.duration_minutes || 60} onChange={e => setEditing({...editing, duration_minutes: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
               </div>
-              <div className="grid grid-cols-1">
+              <div className="grid grid-cols-2 gap-4">
                 <select value={editing.category || 'Avulso'} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm text-gray-400">
-                  <option value="Avulso">Avulso</option>
-                  <option value="Pacote">Pacote</option>
+                  {serviceCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                </select>
+                <select value={editing.active === false ? 'false' : 'true'} onChange={e => setEditing({...editing, active: e.target.value === 'true'})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm text-gray-400">
+                  <option value="true">Ativo</option>
+                  <option value="false">Inativo</option>
                 </select>
               </div>
               <textarea placeholder="Descrição (opcional)" value={editing.description || ''} onChange={e => setEditing({...editing, description: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm h-20 resize-none" />
@@ -1915,6 +1952,7 @@ const FinancialReport = () => {
 
 const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }) => {
   const [step, setStep] = useState(1);
+  const [customerType, setCustomerType] = useState<'subscriber' | 'non_subscriber'>('subscriber');
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [barbers, setBarbers] = useState<{id: number; name: string; specialty: string; photo_url?: string}[]>([]);
   const [slots, setSlots] = useState<string[]>([]);
@@ -1983,12 +2021,12 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
       return;
     }
 
-    if (!clientData.email.trim()) {
+    if (customerType === 'subscriber' && !clientData.email.trim()) {
       setBookingError('Valide a assinatura antes de confirmar o agendamento.');
       return;
     }
 
-    if (!bookingProof) {
+    if (customerType === 'subscriber' && !bookingProof) {
       setBookingError('A validacao da assinatura expirou. Refaça a identificacao.');
       return;
     }
@@ -2000,6 +2038,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          customerType,
           bookingProof,
           serviceId: selectedService.id,
           barberId: selectedBarber.id,
@@ -2029,6 +2068,9 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
   const todayDate = new Date();
   const stepLabels = ['Identificação', 'Serviço', 'Barbeiro', 'Data', 'Horário', 'Seus Dados', 'Confirmar'];
+  const pricingLabel = customerType === 'subscriber'
+    ? 'Coberto pelo plano ativo'
+    : `R$ ${Number(selectedService?.price || 0).toFixed(2)} avulso`;
   const bookingDays = Array.from({ length: 21 }, (_, idx) => {
     const date = new Date(todayDate);
     date.setDate(todayDate.getDate() + idx);
@@ -2050,6 +2092,8 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
           <h2 className="text-3xl font-light mb-4">Agendamento Confirmado!</h2>
           <p className="text-gray-400 mb-2">{selectedService?.name} com {selectedBarber?.name}</p>
           <p className="text-white text-lg font-medium mb-8">{new Date(`${selectedDate}T${selectedTime}:00`).toLocaleString('pt-BR', { dateStyle: 'long', timeStyle: 'short' })}</p>
+          <p className="text-sm text-gray-500 mb-2">Perfil: <span className="text-white font-medium">{customerType === 'subscriber' ? 'Assinante' : 'Avulso'}</span></p>
+          <p className="text-sm text-gray-500 mb-2">Cobrança: <span className="text-white font-medium">{pricingLabel}</span></p>
           <p className="text-sm text-gray-500 mb-3">ID do agendamento: <span className="text-white font-medium">{confirmedAppointmentId || 'indisponivel'}</span></p>
           <p className="text-gray-500 text-sm">Você receberá um lembrete por WhatsApp. Até lá!</p>
         </motion.div>
@@ -2075,12 +2119,39 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
       <AnimatePresence mode="wait">
         <motion.div key={step} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6">
+          {bookingError && step !== 7 && (
+            <div className="max-w-md mx-auto rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {bookingError}
+            </div>
+          )}
 
           {step === 1 && (
             <div className="max-w-md mx-auto space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => {
+                    setCustomerType('subscriber');
+                    setBookingError('');
+                  }}
+                  className={cn('rounded-2xl border px-4 py-4 text-sm font-bold transition-colors', customerType === 'subscriber' ? 'border-white bg-white text-black' : 'border-white/10 bg-zinc-900 text-gray-300')}
+                >
+                  Assinante
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomerType('non_subscriber');
+                    setBookingProof('');
+                    setSubscriptionBlocked(false);
+                    setBookingError('');
+                  }}
+                  className={cn('rounded-2xl border px-4 py-4 text-sm font-bold transition-colors', customerType === 'non_subscriber' ? 'border-white bg-white text-black' : 'border-white/10 bg-zinc-900 text-gray-300')}
+                >
+                  Avulso
+                </button>
+              </div>
               <label className="text-xs font-bold uppercase tracking-widest text-gray-500 block">Identificação Obrigatória</label>
               <input
-                placeholder="Digite seu e-mail ou CPF"
+                placeholder={customerType === 'subscriber' ? 'Digite seu e-mail ou CPF' : 'Identificação opcional'}
                 value={identifier}
                 onChange={(e) => {
                   setIdentifier(e.target.value);
@@ -2100,9 +2171,18 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
               <button
                 onClick={async () => {
+                  setBookingError('');
+
+                  if (customerType === 'non_subscriber') {
+                    setBookingProof('');
+                    setClientData((prev) => ({ ...prev, email: prev.email || '' }));
+                    setStep(2);
+                    return;
+                  }
+
                   const value = identifier.trim();
                   if (!value) {
-                    alert('Informe seu e-mail ou CPF para continuar.');
+                    setBookingError('Informe seu e-mail ou CPF para continuar.');
                     return;
                   }
 
@@ -2119,7 +2199,7 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
 
                     if (!res.ok) {
                       setBookingProof('');
-                      alert(data?.error || 'Nao foi possivel validar sua assinatura.');
+                      setBookingError(data?.error || 'Nao foi possivel validar sua assinatura.');
                       return;
                     }
 
@@ -2131,11 +2211,11 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
                     } else {
                       setBookingProof('');
                       setSubscriptionBlocked(true);
-                      alert('Você precisa de um plano ativo para agendar.');
+                      setBookingError('Você precisa de um plano ativo para agendar como assinante.');
                     }
                   } catch {
                     setBookingProof('');
-                    alert('Erro de conexao ao validar assinatura. Tente novamente.');
+                    setBookingError('Erro de conexao ao validar assinatura. Tente novamente.');
                   } finally {
                     setCheckingSubscription(false);
                   }
@@ -2257,12 +2337,12 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
             <div className="max-w-md mx-auto space-y-4">
               <input placeholder="Seu Nome Completo" value={clientData.name} onChange={e => setClientData({...clientData, name: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
               <input placeholder="WhatsApp (ex: 11999999999)" value={clientData.phone} onChange={e => setClientData({...clientData, phone: e.target.value})} className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm" />
-              <input type="email" placeholder="E-mail da assinatura" value={clientData.email} disabled className="w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm text-gray-400 cursor-not-allowed" />
+              <input type="email" placeholder={customerType === 'subscriber' ? 'E-mail da assinatura' : 'E-mail (opcional)'} value={clientData.email} disabled={customerType === 'subscriber'} onChange={e => setClientData({...clientData, email: e.target.value})} className={cn('w-full bg-zinc-900 border border-white/10 rounded-xl p-4 text-sm', customerType === 'subscriber' ? 'text-gray-400 cursor-not-allowed' : 'text-white')} />
 
               <button
                 onClick={() => {
                   if (!clientData.name || !clientData.phone) {
-                    alert('Preencha nome e WhatsApp.');
+                    setBookingError('Preencha nome e WhatsApp.');
                     return;
                   }
                   setStep(7);
@@ -2286,7 +2366,8 @@ const PublicBooking = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Serviço</span><span className="text-white font-medium">{selectedService?.name}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Barbeiro</span><span className="text-white font-medium">{selectedBarber?.name}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Data/Hora</span><span className="text-white font-medium">{selectedDate && selectedTime ? new Date(`${selectedDate}T${selectedTime}:00`).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-gray-400">Valor</span><span className="text-emerald-400 font-bold">R$ {Number(selectedService?.price || 0).toFixed(2)}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Perfil</span><span className="text-white font-medium">{customerType === 'subscriber' ? 'Assinante' : 'Avulso'}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-gray-400">Valor</span><span className="text-emerald-400 font-bold">{pricingLabel}</span></div>
                 <div className="h-px bg-white/10" />
                 <div className="flex justify-between text-sm"><span className="text-gray-400">Nome</span><span className="text-white">{clientData.name}</span></div>
                 <div className="flex justify-between text-sm"><span className="text-gray-400">WhatsApp</span><span className="text-white">{clientData.phone}</span></div>

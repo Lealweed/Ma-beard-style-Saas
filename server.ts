@@ -1318,32 +1318,115 @@ const computeAvailableSlotsForBarberDate = async ({
   });
 };
 
+const normalizeCustomerType = (value: any) =>
+  String(value || '').trim().toLowerCase() === 'subscriber' ? 'subscriber' : 'non_subscriber';
+
+const normalizeCustomerStatus = (value: any) =>
+  String(value || '').trim().toLowerCase() === 'inactive' ? 'inactive' : 'active';
+
+const normalizeNullableText = (value: any) => {
+  const normalized = String(value || '').trim();
+  return normalized || null;
+};
+
+const normalizeNullableDate = (value: any) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(normalized) ? normalized : null;
+};
+
+const normalizeNullableDateTimeIso = (value: any) => {
+  const date = toValidDate(value);
+  return date ? date.toISOString() : null;
+};
+
+const getServiceCatalogItem = async (serviceId: number) => {
+  if (!supabase || !serviceId) return null;
+
+  const { data, error } = await supabase
+    .from('services_catalog')
+    .select('id, name, price, duration_minutes, active, category')
+    .eq('id', serviceId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
+
+const getCustomerById = async (customerId: number) => {
+  if (!supabase || !customerId) return null;
+
+  const { data, error } = await supabase
+    .from('customers')
+    .select('id, customer_type, status, name, phone, email')
+    .eq('id', customerId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+};
+
 const findOrCreateCustomer = async ({
   name,
   email,
   phone,
   cpf,
+  customerType,
+  birthDate,
+  notes,
+  preferences,
+  lastVisitAt,
+  acquisitionSource,
+  customerStatus,
+  photoUrl,
+  profileTag,
 }: {
   name: string;
   email?: string;
   phone?: string;
   cpf?: string;
+  customerType?: string;
+  birthDate?: string;
+  notes?: string;
+  preferences?: string;
+  lastVisitAt?: string;
+  acquisitionSource?: string;
+  customerStatus?: string;
+  photoUrl?: string;
+  profileTag?: string;
 }) => {
   if (!supabase) {
     throw new Error("Supabase nao configurado.");
   }
 
   const safeName = String(name || "").trim();
-  const safeEmail = String(email || "").trim();
+  const safeEmail = String(email || "").trim().toLowerCase();
   const safePhone = String(phone || "").trim();
   const safeCpf = String(cpf || "").trim();
+  const normalizedCustomerType = normalizeCustomerType(customerType);
+  const normalizedStatus = normalizeCustomerStatus(customerStatus);
+  const customerPayload = {
+    name: safeName,
+    email: safeEmail || null,
+    phone: safePhone || null,
+    cpf: safeCpf || null,
+    customer_type: normalizedCustomerType,
+    birth_date: normalizeNullableDate(birthDate),
+    notes: normalizeNullableText(notes),
+    preferences: normalizeNullableText(preferences),
+    last_visit_at: normalizeNullableDateTimeIso(lastVisitAt),
+    acquisition_source: normalizeNullableText(acquisitionSource),
+    status: normalizedStatus,
+    photo_url: normalizeNullableText(photoUrl),
+    profile_tag: normalizeNullableText(profileTag),
+  };
 
   if (!safeName) {
     throw new Error("Nome e obrigatorio.");
   }
 
   if (safePhone || safeEmail) {
-    let query = supabase.from("customers").select("id");
+    let query = supabase.from("customers").select("id, name, email, phone, customer_type, status");
     if (safePhone && safeEmail) {
       query = query.or(`phone.eq.${safePhone},email.eq.${safeEmail}`);
     } else if (safePhone) {
@@ -1354,12 +1437,24 @@ const findOrCreateCustomer = async ({
 
     const { data: existing, error: existingError } = await query.maybeSingle();
     if (existingError) throw existingError;
-    if (existing?.id) return existing.id;
+    if (existing?.id) {
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({
+          ...customerPayload,
+          customer_type: existing.customer_type === 'subscriber' ? 'subscriber' : normalizedCustomerType,
+          status: normalizedStatus || existing.status || 'active',
+        })
+        .eq('id', existing.id);
+
+      if (updateError) throw updateError;
+      return existing.id;
+    }
   }
 
   const { data, error } = await supabase
     .from("customers")
-    .insert([{ name: safeName, email: safeEmail || null, phone: safePhone || null, cpf: safeCpf || null }])
+    .insert([customerPayload])
     .select();
 
   if (error) {
@@ -1445,6 +1540,70 @@ const resolveActiveSubscriptionEmail = async (rawIdentifier: string) => {
   }
 
   return null;
+};
+
+const isBlockedServiceType = (value: any) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized.includes('bloque') || normalized.includes('indispon');
+};
+
+const buildAppointmentWritePayload = async ({
+  customerId,
+  barberId,
+  serviceId,
+  serviceType,
+  appointmentDate,
+  appointmentEnd,
+  notes,
+  status,
+  quotedPrice,
+  pricingMode,
+  customerTypeSnapshot,
+  syncOrigin,
+}: {
+  customerId?: number | null;
+  barberId?: number | null;
+  serviceId?: number | null;
+  serviceType?: string | null;
+  appointmentDate: string;
+  appointmentEnd: string;
+  notes?: string | null;
+  status?: string | null;
+  quotedPrice?: number | null;
+  pricingMode?: string | null;
+  customerTypeSnapshot?: string | null;
+  syncOrigin?: string | null;
+}) => {
+  const safeServiceId = Number(serviceId || 0) || null;
+  const service = safeServiceId ? await getServiceCatalogItem(safeServiceId) : null;
+  const customer = customerId ? await getCustomerById(Number(customerId)) : null;
+  const normalizedServiceType = String(serviceType || service?.name || '').trim();
+  const resolvedPricingMode = String(pricingMode || '').trim() === 'plan_covered'
+    ? 'plan_covered'
+    : String(pricingMode || '').trim() === 'custom'
+      ? 'custom'
+      : 'service_charge';
+  const resolvedQuotedPrice = Number.isFinite(Number(quotedPrice))
+    ? Number(quotedPrice)
+    : resolvedPricingMode === 'plan_covered'
+      ? 0
+      : Number(service?.price || 0);
+  const resolvedCustomerType = normalizeCustomerType(customerTypeSnapshot || customer?.customer_type);
+
+  return withPersistedAppointmentCompatibility({
+    customer_id: customerId || null,
+    barber_id: barberId || null,
+    service_id: safeServiceId,
+    service_type: normalizedServiceType,
+    appointment_date: appointmentDate,
+    appointment_end: appointmentEnd,
+    notes: notes || null,
+    status: status || 'pending',
+    quoted_price: resolvedQuotedPrice,
+    pricing_mode: resolvedPricingMode,
+    customer_type_snapshot: resolvedCustomerType,
+    sync_origin: syncOrigin || 'local',
+  });
 };
 
 async function startServer() {
@@ -1716,7 +1875,7 @@ async function startServer() {
   });
 
   app.post("/api/appointments", async (req, res) => {
-    const { customer_id, barber_id, service_type, appointment_date, appointment_end, status, notes } = req.body;
+    const { customer_id, barber_id, service_id, service_type, appointment_date, appointment_end, status, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
     try {
       const start = toValidDate(appointment_date);
       if (!start) {
@@ -1728,15 +1887,19 @@ async function startServer() {
         ? explicitEnd
         : addMinutes(start, await getAppointmentDurationMinutes());
 
-      const insertPayload = await withLegacyAppointmentTimeColumns({
-        customer_id: customer_id || null,
-        barber_id: barber_id || null,
-        service_type,
-        appointment_date: start.toISOString(),
-        appointment_end: end.toISOString(),
+      const insertPayload = await buildAppointmentWritePayload({
+        customerId: customer_id || null,
+        barberId: barber_id || null,
+        serviceId: service_id || null,
+        serviceType: service_type,
+        appointmentDate: start.toISOString(),
+        appointmentEnd: end.toISOString(),
         notes: notes || null,
         status: status || 'pending',
-        sync_origin: 'local',
+        quotedPrice: quoted_price,
+        pricingMode: pricing_mode,
+        customerTypeSnapshot: customer_type_snapshot,
+        syncOrigin: 'local',
       });
 
       const { data, error } = await supabase
@@ -1800,7 +1963,7 @@ async function startServer() {
   });
 
   app.put("/api/appointments/:id", async (req, res) => {
-    const { status, appointment_date, appointment_end, service_type, barber_id, customer_id, notes } = req.body;
+    const { status, appointment_date, appointment_end, service_type, service_id, barber_id, customer_id, notes, quoted_price, pricing_mode, customer_type_snapshot } = req.body;
     const { id } = req.params;
     
     try {
@@ -1819,9 +1982,13 @@ async function startServer() {
 
       if (status !== undefined) updateData.status = status;
       if (service_type !== undefined) updateData.service_type = service_type;
+      if (service_id !== undefined) updateData.service_id = service_id || null;
       if (barber_id !== undefined) updateData.barber_id = barber_id || null;
       if (customer_id !== undefined) updateData.customer_id = customer_id || null;
       if (notes !== undefined) updateData.notes = notes || null;
+      if (quoted_price !== undefined) updateData.quoted_price = Number(quoted_price || 0);
+      if (pricing_mode !== undefined) updateData.pricing_mode = pricing_mode;
+      if (customer_type_snapshot !== undefined) updateData.customer_type_snapshot = normalizeCustomerType(customer_type_snapshot);
 
       if (nextStart) {
         const resolvedEnd = nextEndInput && nextEndInput.getTime() > nextStart.getTime()
@@ -1832,7 +1999,20 @@ async function startServer() {
         updateData.appointment_end = resolvedEnd.toISOString();
       }
 
-      const persistedUpdateData = await withLegacyAppointmentTimeColumns(updateData);
+      const persistedUpdateData = await buildAppointmentWritePayload({
+        customerId: updateData.customer_id !== undefined ? updateData.customer_id : oldApt.customer_id,
+        barberId: updateData.barber_id !== undefined ? updateData.barber_id : oldApt.barber_id,
+        serviceId: updateData.service_id !== undefined ? updateData.service_id : oldApt.service_id,
+        serviceType: updateData.service_type !== undefined ? updateData.service_type : oldApt.service_type,
+        appointmentDate: updateData.appointment_date || oldApt.appointment_date,
+        appointmentEnd: updateData.appointment_end || oldApt.appointment_end,
+        notes: updateData.notes !== undefined ? updateData.notes : oldApt.notes,
+        status: updateData.status !== undefined ? updateData.status : oldApt.status,
+        quotedPrice: updateData.quoted_price !== undefined ? updateData.quoted_price : oldApt.quoted_price,
+        pricingMode: updateData.pricing_mode !== undefined ? updateData.pricing_mode : oldApt.pricing_mode,
+        customerTypeSnapshot: updateData.customer_type_snapshot !== undefined ? updateData.customer_type_snapshot : oldApt.customer_type_snapshot,
+        syncOrigin: oldApt.sync_origin || 'local',
+      });
 
       const { error } = await supabase
         .from('appointments')
@@ -1950,9 +2130,10 @@ async function startServer() {
   });
 
   app.post("/api/customers", async (req, res) => {
-    const { name, email, phone, cpf } = req.body;
+    const { name, email, phone, cpf, customer_type, birth_date, notes, preferences, last_visit_at, acquisition_source, status, photo_url, profile_tag } = req.body;
     
     if (!name) return res.status(400).json({ error: "Nome é obrigatório" });
+    if (!String(phone || '').trim()) return res.status(400).json({ error: "Telefone é obrigatório" });
 
     try {
       // First, check if customer already exists by phone or email
@@ -1972,30 +2153,23 @@ async function startServer() {
         }
       }
 
-      const { data, error } = await supabase
-        .from('customers')
-        .insert([{ name, email, phone, cpf }])
-        .select();
+      const createdCustomerId = await findOrCreateCustomer({
+        name,
+        email,
+        phone,
+        cpf,
+        customerType: customer_type,
+        birthDate: birth_date,
+        notes,
+        preferences,
+        lastVisitAt: last_visit_at,
+        acquisitionSource: acquisition_source,
+        customerStatus: status,
+        photoUrl: photo_url,
+        profileTag: profile_tag,
+      });
       
-      if (error) {
-        console.error("Erro Supabase ao inserir cliente:", error);
-        if (error.code === '23505') {
-          // Fallback if the check above missed it due to race condition
-          const { data: existing } = await supabase.from('customers').select('id').or(`phone.eq.${phone},email.eq.${email}`).maybeSingle();
-          if (existing) return res.json({ id: existing.id });
-          return res.status(400).json({ error: "Email ou CPF já cadastrado" });
-        }
-        if (error.code === '42P01') {
-          return res.status(500).json({ error: "Tabela 'customers' não encontrada. Verifique se o banco de dados foi configurado corretamente." });
-        }
-        return res.status(500).json({ error: "Erro ao salvar cliente: " + error.message });
-      }
-      
-      if (!data || data.length === 0) {
-        return res.status(500).json({ error: "Erro ao criar cliente: nenhum dado retornado pelo banco." });
-      }
-      
-      res.json({ id: data[0].id });
+      res.json({ id: createdCustomerId });
     } catch (err: any) {
       console.error("Erro interno ao salvar cliente:", err);
       res.status(500).json({ error: "Erro interno no servidor: " + err.message });
@@ -2003,10 +2177,26 @@ async function startServer() {
   });
 
   app.put("/api/customers/:id", async (req, res) => {
-    const { name, email, phone, cpf } = req.body;
+    const { name, email, phone, cpf, customer_type, birth_date, notes, preferences, last_visit_at, acquisition_source, status, photo_url, profile_tag } = req.body;
+    if (!String(name || '').trim()) return res.status(400).json({ error: 'Nome é obrigatório' });
+    if (!String(phone || '').trim()) return res.status(400).json({ error: 'Telefone é obrigatório' });
     const { error } = await supabase
       .from('customers')
-      .update({ name, email, phone, cpf })
+      .update({
+        name: String(name || '').trim(),
+        email: normalizeNullableText(email),
+        phone: String(phone || '').trim(),
+        cpf: normalizeNullableText(cpf),
+        customer_type: normalizeCustomerType(customer_type),
+        birth_date: normalizeNullableDate(birth_date),
+        notes: normalizeNullableText(notes),
+        preferences: normalizeNullableText(preferences),
+        last_visit_at: normalizeNullableDateTimeIso(last_visit_at),
+        acquisition_source: normalizeNullableText(acquisition_source),
+        status: normalizeCustomerStatus(status),
+        photo_url: normalizeNullableText(photo_url),
+        profile_tag: normalizeNullableText(profile_tag),
+      })
       .eq('id', req.params.id);
     
     if (error) return res.status(500).json({ error: error.message });
@@ -2539,6 +2729,7 @@ async function startServer() {
 
       return res.json({
         active: true,
+        customerType: 'subscriber',
         email: activeEmail,
         bookingProof: createPublicBookingProofToken(activeEmail),
       });
@@ -2569,6 +2760,7 @@ async function startServer() {
 
   app.post("/api/public/book-appointment", async (req, res) => {
     const bookingProof = String(req.body?.bookingProof || '').trim();
+    const customerType = normalizeCustomerType(req.body?.customerType);
     const serviceId = Number(req.body?.serviceId || 0);
     const barberId = Number(req.body?.barberId || 0);
     const date = String(req.body?.date || '').trim();
@@ -2576,13 +2768,14 @@ async function startServer() {
     const clientData = req.body?.clientData || {};
     const clientName = String(clientData.name || '').trim();
     const clientPhone = String(clientData.phone || '').trim();
+    const clientEmail = String(clientData.email || '').trim().toLowerCase();
 
-    if (!bookingProof) {
+    if (customerType === 'subscriber' && !bookingProof) {
       return res.status(401).json({ error: 'Valide sua assinatura antes de concluir o agendamento.' });
     }
 
-    const proofPayload = verifyPublicBookingProofToken(bookingProof);
-    if (!proofPayload?.email) {
+    const proofPayload = bookingProof ? verifyPublicBookingProofToken(bookingProof) : null;
+    if (customerType === 'subscriber' && !proofPayload?.email) {
       return res.status(401).json({ error: 'A validacao da assinatura expirou. Refaça a identificacao.' });
     }
 
@@ -2625,14 +2818,17 @@ async function startServer() {
     try {
       await ensureAppointmentLinkColumns();
 
-      const activeEmail = await resolveActiveSubscriptionEmail(String(proofPayload.email));
-      if (!activeEmail || activeEmail !== String(proofPayload.email)) {
+      const activeEmail = customerType === 'subscriber'
+        ? await resolveActiveSubscriptionEmail(String(proofPayload?.email || ''))
+        : null;
+
+      if (customerType === 'subscriber' && (!activeEmail || activeEmail !== String(proofPayload?.email))) {
         return res.status(403).json({ error: 'Sua assinatura nao esta mais ativa para este agendamento.' });
       }
 
       const { data: service, error: serviceError } = await supabase
         .from('services_catalog')
-        .select('id, name, duration_minutes, active')
+        .select('id, name, price, duration_minutes, active')
         .eq('id', serviceId)
         .single();
 
@@ -2672,23 +2868,29 @@ async function startServer() {
       const end = addMinutes(start, Math.max(15, Number(service.duration_minutes || 60) || 60));
       const customerId = await findOrCreateCustomer({
         name: clientName,
-        email: activeEmail,
+        email: activeEmail || clientEmail,
         phone: clientPhone,
+        customerType,
+        lastVisitAt: start.toISOString(),
+        customerStatus: 'active',
       });
 
       if (!customerId || !barber.id || !service.id) {
         return res.status(400).json({ error: 'Nao foi possivel resolver os vinculos obrigatorios do agendamento.' });
       }
 
-      const insertPayload = await withPersistedAppointmentCompatibility({
-        customer_id: customerId,
-        barber_id: barberId,
-        service_id: Number(service.id),
-        service_type: String(service.name || '').trim(),
-        appointment_date: start.toISOString(),
-        appointment_end: end.toISOString(),
+      const insertPayload = await buildAppointmentWritePayload({
+        customerId,
+        barberId,
+        serviceId: Number(service.id),
+        serviceType: String(service.name || '').trim(),
+        appointmentDate: start.toISOString(),
+        appointmentEnd: end.toISOString(),
         status: 'confirmed',
-        sync_origin: 'local',
+        quotedPrice: customerType === 'subscriber' ? 0 : Number(service.price || 0),
+        pricingMode: customerType === 'subscriber' ? 'plan_covered' : 'service_charge',
+        customerTypeSnapshot: customerType,
+        syncOrigin: 'local',
       });
 
       const { data, error } = await supabase
@@ -2718,6 +2920,9 @@ async function startServer() {
         customerId: persistedAppointment.customer_id,
         barberId: persistedAppointment.barber_id,
         serviceId: persistedAppointment.service_id,
+        customerType: persistedAppointment.customer_type_snapshot,
+        quotedPrice: persistedAppointment.quoted_price,
+        pricingMode: persistedAppointment.pricing_mode,
         success: true,
       });
     } catch (error: any) {

@@ -11,6 +11,7 @@ function cn(...inputs: ClassValue[]) {
 interface Customer {
   id: number;
   name: string;
+  customer_type?: 'subscriber' | 'non_subscriber';
 }
 
 interface Barber {
@@ -22,7 +23,11 @@ interface Appointment {
   id: number;
   customer_id: number | null;
   barber_id: number | null;
+  service_id?: number | null;
   service_type: string;
+  quoted_price?: number | null;
+  pricing_mode?: 'plan_covered' | 'service_charge' | 'custom';
+  customer_type_snapshot?: 'subscriber' | 'non_subscriber';
   appointment_date: string;
   appointment_end?: string | null;
   status: string;
@@ -34,10 +39,19 @@ interface Appointment {
   barber_name?: string;
 }
 
+interface ServiceCatalogItem {
+  id: number;
+  name: string;
+  price: number;
+  duration_minutes: number;
+  active?: boolean;
+}
+
 export default function AppointmentsManagerMonthly() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
+  const [servicesCatalog, setServicesCatalog] = useState<ServiceCatalogItem[]>([]);
   const [editing, setEditing] = useState<Partial<Appointment> | null>(null);
   const [blocking, setBlocking] = useState<{ barber_id: string; date: string; time: string; duration_minutes: string; notes: string } | null>(null);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
@@ -263,20 +277,23 @@ export default function AppointmentsManagerMonthly() {
   };
 
   const fetchReferenceData = async () => {
-    const [customersRes, barbersRes, integrationRes] = await Promise.all([
+    const [customersRes, barbersRes, servicesRes, integrationRes] = await Promise.all([
       fetch('/api/customers'),
       fetch('/api/barbers'),
+      fetch('/api/services-catalog'),
       fetch('/api/integrations/status')
     ]);
 
-    const [customersData, barbersData, integrationData] = await Promise.all([
+    const [customersData, barbersData, servicesData, integrationData] = await Promise.all([
       parseJsonResponse<Customer[]>(customersRes, 'Falha ao carregar clientes.'),
       parseJsonResponse<Barber[]>(barbersRes, 'Falha ao carregar barbeiros.'),
+      parseJsonResponse<ServiceCatalogItem[]>(servicesRes, 'Falha ao carregar servicos.'),
       parseJsonResponse<any>(integrationRes, 'Falha ao validar a integracao do Google.')
     ]);
 
     setCustomers(Array.isArray(customersData) ? customersData : []);
     setBarbers(Array.isArray(barbersData) ? barbersData : []);
+    setServicesCatalog(Array.isArray(servicesData) ? servicesData.filter((service) => service.active !== false) : []);
     const connected = Boolean(integrationData?.google?.connected);
     setGoogleConnected(connected);
     setAppointmentsSyncInfo(integrationData?.appointmentsSync || null);
@@ -430,6 +447,11 @@ export default function AppointmentsManagerMonthly() {
       return;
     }
 
+    if (!isBlockedAppointment(editing) && !editing?.service_id) {
+      alert('Selecione um serviço do catálogo para salvar o agendamento.');
+      return;
+    }
+
     try {
       const payload = applyDurationToAppointment(editing, getAppointmentDurationMinutes(editing));
       const method = editing.id ? 'PUT' : 'POST';
@@ -551,7 +573,10 @@ export default function AppointmentsManagerMonthly() {
     setEditing({
       customer_id: null,
       barber_id: null,
+      service_id: null,
       service_type: '',
+      quoted_price: null,
+      pricing_mode: 'service_charge',
       appointment_date: slot.toISOString(),
       appointment_end: new Date(slot.getTime() + 60 * 60000).toISOString(),
       notes: '',
@@ -933,7 +958,16 @@ export default function AppointmentsManagerMonthly() {
               {!isBlockedAppointment(editing) && (
                 <select
                   value={editing.customer_id ?? ''}
-                  onChange={(e) => setEditing({ ...editing, customer_id: e.target.value ? Number(e.target.value) : null })}
+                  onChange={(e) => {
+                    const customerId = e.target.value ? Number(e.target.value) : null;
+                    const selectedCustomer = customers.find((customer) => customer.id === customerId);
+                    setEditing({
+                      ...editing,
+                      customer_id: customerId,
+                      customer_type_snapshot: selectedCustomer?.customer_type || 'non_subscriber',
+                      pricing_mode: selectedCustomer?.customer_type === 'subscriber' ? 'plan_covered' : (editing.pricing_mode === 'plan_covered' ? 'service_charge' : editing.pricing_mode),
+                    });
+                  }}
                   className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm"
                 >
                   <option value="">Selecione o Cliente</option>
@@ -948,12 +982,66 @@ export default function AppointmentsManagerMonthly() {
                 <option value="">Selecione o Barbeiro</option>
                 {barbers.map((barber) => <option key={barber.id} value={barber.id}>{barber.name}</option>)}
               </select>
+              {!isBlockedAppointment(editing) && (
+                <select
+                  value={editing.service_id ?? ''}
+                  onChange={(e) => {
+                    const selectedService = servicesCatalog.find((service) => service.id === Number(e.target.value));
+                    if (!selectedService) {
+                      setEditing({ ...editing, service_id: null, service_type: '', quoted_price: null, pricing_mode: 'service_charge' });
+                      return;
+                    }
+
+                    const selectedCustomer = customers.find((customer) => customer.id === editing.customer_id);
+                    const pricingMode = selectedCustomer?.customer_type === 'subscriber' ? 'plan_covered' : 'service_charge';
+                    const nextEditing = applyDurationToAppointment(
+                      {
+                        ...editing,
+                        service_id: selectedService.id,
+                        service_type: selectedService.name,
+                        quoted_price: Number(selectedService.price || 0),
+                        pricing_mode: pricingMode,
+                        customer_type_snapshot: selectedCustomer?.customer_type || 'non_subscriber',
+                      },
+                      Number(selectedService.duration_minutes || 60),
+                    );
+
+                    setEditing(nextEditing);
+                  }}
+                  className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm"
+                >
+                  <option value="">Selecione o serviço</option>
+                  {servicesCatalog.map((service) => <option key={service.id} value={service.id}>{service.name}</option>)}
+                </select>
+              )}
               <input
                 placeholder={isBlockedAppointment(editing) ? 'Descricao do bloqueio' : 'Tipo de Servico (ex: Corte e Barba)'}
                 value={editing.service_type || ''}
                 onChange={(e) => setEditing({ ...editing, service_type: e.target.value })}
                 className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm"
               />
+              {!isBlockedAppointment(editing) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    value={editing.quoted_price ?? ''}
+                    onChange={(e) => setEditing({ ...editing, quoted_price: e.target.value ? Number(e.target.value) : null, pricing_mode: 'custom' })}
+                    className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm"
+                    placeholder="Preço agendado (R$)"
+                  />
+                  <select
+                    value={editing.pricing_mode || 'service_charge'}
+                    onChange={(e) => setEditing({ ...editing, pricing_mode: e.target.value as Appointment['pricing_mode'] })}
+                    className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm"
+                  >
+                    <option value="service_charge">Cobrança avulsa</option>
+                    <option value="plan_covered">Coberto pelo plano</option>
+                    <option value="custom">Preço customizado</option>
+                  </select>
+                </div>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <input
                   type="datetime-local"
