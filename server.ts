@@ -1482,48 +1482,189 @@ const normalizeNullableDateTimeIso = (value: any) => {
   return date ? date.toISOString() : null;
 };
 
+const normalizeServiceCatalogName = (value: any) => String(value || '').trim();
+
+const normalizeServiceCatalogDuration = (value: any, fallback = 60) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.round(parsed));
+};
+
+const normalizeServiceCatalogPrice = (priceValue: any, priceCentsValue?: any) => {
+  const normalizedPrice = Number(priceValue);
+  if (Number.isFinite(normalizedPrice)) {
+    return Math.max(0, Math.round(normalizedPrice * 100) / 100);
+  }
+
+  const normalizedPriceCents = Number(priceCentsValue);
+  if (Number.isFinite(normalizedPriceCents)) {
+    return Math.max(0, Math.round(normalizedPriceCents) / 100);
+  }
+
+  return 0;
+};
+
+const getServicesCatalogColumnSupport = async () => {
+  const [
+    hasDescription,
+    hasDurationMinutes,
+    hasDurationMin,
+    hasPrice,
+    hasPriceCents,
+    hasCategory,
+    hasActive,
+    hasImageUrl,
+    hasUpdatedAt,
+    hasCreatedAt,
+  ] = await Promise.all([
+    hasTableColumn('services_catalog', 'description'),
+    hasTableColumn('services_catalog', 'duration_minutes'),
+    hasTableColumn('services_catalog', 'duration_min'),
+    hasTableColumn('services_catalog', 'price'),
+    hasTableColumn('services_catalog', 'price_cents'),
+    hasTableColumn('services_catalog', 'category'),
+    hasTableColumn('services_catalog', 'active'),
+    hasTableColumn('services_catalog', 'image_url'),
+    hasTableColumn('services_catalog', 'updated_at'),
+    hasTableColumn('services_catalog', 'created_at'),
+  ]);
+
+  return {
+    hasDescription,
+    hasDurationMinutes,
+    hasDurationMin,
+    hasPrice,
+    hasPriceCents,
+    hasCategory,
+    hasActive,
+    hasImageUrl,
+    hasUpdatedAt,
+    hasCreatedAt,
+  };
+};
+
+const getServicesCatalogSelectColumns = async ({ includeCreatedAt = false } = {}) => {
+  const support = await getServicesCatalogColumnSupport();
+  const columns = [
+    'id',
+    'name',
+    support.hasDescription ? 'description' : null,
+    support.hasDurationMinutes ? 'duration_minutes' : null,
+    support.hasDurationMin ? 'duration_min' : null,
+    support.hasPrice ? 'price' : null,
+    support.hasPriceCents ? 'price_cents' : null,
+    support.hasCategory ? 'category' : null,
+    support.hasActive ? 'active' : null,
+    support.hasImageUrl ? 'image_url' : null,
+    support.hasUpdatedAt ? 'updated_at' : null,
+    includeCreatedAt && support.hasCreatedAt ? 'created_at' : null,
+  ].filter(Boolean) as string[];
+
+  return Array.from(new Set(columns)).join(', ');
+};
+
+const mapServiceCatalogRecord = (service: any) => {
+  const duration = normalizeServiceCatalogDuration(service?.duration_minutes ?? service?.duration_min ?? 60);
+  const price = normalizeServiceCatalogPrice(service?.price, service?.price_cents);
+
+  return {
+    id: Number(service?.id || 0),
+    name: normalizeServiceCatalogName(service?.name),
+    description: normalizeNullableText(service?.description),
+    duration_min: duration,
+    duration_minutes: duration,
+    price,
+    price_cents: Math.round(price * 100),
+    category: normalizeServiceCatalogName(service?.category) || 'Avulso',
+    active: service?.active !== false,
+    image_url: normalizeNullableText(service?.image_url),
+    updated_at: normalizeNullableDateTimeIso(service?.updated_at),
+    created_at: normalizeNullableDateTimeIso(service?.created_at),
+  };
+};
+
+const buildServiceCatalogWritePayload = async (input: any) => {
+  const support = await getServicesCatalogColumnSupport();
+  const name = normalizeServiceCatalogName(input?.name);
+  const duration = normalizeServiceCatalogDuration(input?.duration_min ?? input?.duration_minutes, 0);
+  const price = normalizeServiceCatalogPrice(input?.price, input?.price_cents);
+
+  if (!name) {
+    throw new Error('Nome do servico obrigatorio.');
+  }
+
+  if (!duration || duration <= 0) {
+    throw new Error('Duracao deve ser maior que zero.');
+  }
+
+  if (price < 0) {
+    throw new Error('Preco deve ser maior ou igual a zero.');
+  }
+
+  const payload: Record<string, any> = {
+    name,
+  };
+
+  if (support.hasDescription) payload.description = normalizeNullableText(input?.description);
+  if (support.hasDurationMinutes) payload.duration_minutes = duration;
+  if (support.hasDurationMin) payload.duration_min = duration;
+  if (support.hasPrice) payload.price = price;
+  if (support.hasPriceCents) payload.price_cents = Math.round(price * 100);
+  if (support.hasCategory) payload.category = normalizeServiceCatalogName(input?.category) || 'Avulso';
+  if (support.hasActive) payload.active = input?.active !== false;
+  if (support.hasImageUrl) payload.image_url = normalizeNullableText(input?.image_url);
+  if (support.hasUpdatedAt) payload.updated_at = new Date().toISOString();
+
+  return payload;
+};
+
 const getServiceCatalogItem = async (serviceId: string | number) => {
   const legacyServiceId = fromPublicEntityUuid('service', serviceId);
   if (!supabase || !legacyServiceId) return null;
 
+  const selectColumns = await getServicesCatalogSelectColumns();
+
   const { data, error } = await supabase
     .from('services_catalog')
-    .select('id, name, price, duration_minutes, active, category')
+    .select(selectColumns)
     .eq('id', legacyServiceId)
     .maybeSingle();
 
   if (error) throw error;
-  return data || null;
+  return data ? mapServiceCatalogRecord(data) : null;
 };
 
 const getPublicServicesCatalog = async () => {
   if (!supabase) return [];
 
-  const baseQuery = (columns: string) => supabase
+  const support = await getServicesCatalogColumnSupport();
+  const selectColumns = await getServicesCatalogSelectColumns();
+
+  let query = supabase
     .from('services_catalog')
-    .select(columns)
-    .eq('active', true)
+    .select(selectColumns)
     .order('name', { ascending: true });
 
-  let { data, error } = await baseQuery('id, name, duration_minutes, price, category, active, image_url');
-
-  if (error && String(error.message || '').toLowerCase().includes('image_url')) {
-    const fallbackResult = await baseQuery('id, name, duration_minutes, price, category, active');
-    data = fallbackResult.data;
-    error = fallbackResult.error;
+  if (support.hasActive) {
+    query = query.eq('active', true);
   }
+
+  const { data, error } = await query;
 
   if (error) throw error;
 
-  return (data || []).map((service: any) => ({
-    id: toPublicEntityUuid('service', service.id),
-    name: String(service.name || ''),
-    duration_minutes: Number(service.duration_minutes || 0),
-    price: Number(service.price || 0),
-    category: String(service.category || 'Avulso'),
-    active: service.active !== false,
-    image_url: service?.image_url || null,
-  }));
+  return (data || []).map((service: any) => {
+    const mapped = mapServiceCatalogRecord(service);
+    return {
+      id: toPublicEntityUuid('service', mapped.id),
+      name: mapped.name,
+      duration_minutes: mapped.duration_minutes,
+      price: mapped.price,
+      category: mapped.category,
+      active: mapped.active,
+      image_url: mapped.image_url,
+    };
+  });
 };
 
 const getCustomerById = async (customerId: string | number) => {
@@ -2612,26 +2753,105 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Services Catalog CRUD
-  app.get("/api/services-catalog", async (req, res) => {
-    const { data, error } = await supabase.from('services_catalog').select('*').order('name');
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data || []);
-  });
+  // Services Catalog CRUD / Admin Services
+  const listAdminServices = async (_req: Request, res: Response) => {
+    try {
+      const support = await getServicesCatalogColumnSupport();
+      const selectColumns = await getServicesCatalogSelectColumns({ includeCreatedAt: true });
+      const orderColumn = support.hasUpdatedAt ? 'updated_at' : 'name';
+      const { data, error } = await supabase
+        .from('services_catalog')
+        .select(selectColumns)
+        .order(orderColumn, { ascending: orderColumn === 'name' });
 
-  app.post("/api/services-catalog", async (req, res) => {
-    const { name, price, duration_minutes, description, category } = req.body;
-    const { data, error } = await supabase.from('services_catalog').insert([{ name, price, duration_minutes: duration_minutes || 60, description, category: category || 'Avulso' }]).select();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data[0]);
-  });
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
 
-  app.put("/api/services-catalog/:id", async (req, res) => {
-    const { name, price, duration_minutes, description, active, category } = req.body;
-    const { error } = await supabase.from('services_catalog').update({ name, price, duration_minutes, description, active, category: category || 'Avulso' }).eq('id', req.params.id);
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
-  });
+      return res.json((data || []).map(mapServiceCatalogRecord));
+    } catch (error: any) {
+      return res.status(500).json({ error: error?.message || 'Falha ao listar servicos.' });
+    }
+  };
+
+  const createAdminService = async (req: Request, res: Response) => {
+    try {
+      const payload = await buildServiceCatalogWritePayload(req.body || {});
+      const selectColumns = await getServicesCatalogSelectColumns({ includeCreatedAt: true });
+      const { data, error } = await supabase
+        .from('services_catalog')
+        .insert([payload])
+        .select(selectColumns)
+        .single();
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.status(201).json(mapServiceCatalogRecord(data));
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Falha ao criar servico.' });
+    }
+  };
+
+  const updateAdminService = async (req: Request, res: Response) => {
+    try {
+      const payload = await buildServiceCatalogWritePayload(req.body || {});
+      const selectColumns = await getServicesCatalogSelectColumns({ includeCreatedAt: true });
+      const { data, error } = await supabase
+        .from('services_catalog')
+        .update(payload)
+        .eq('id', req.params.id)
+        .select(selectColumns)
+        .single();
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json(mapServiceCatalogRecord(data));
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Falha ao atualizar servico.' });
+    }
+  };
+
+  const patchAdminServiceStatus = async (req: Request, res: Response) => {
+    try {
+      const support = await getServicesCatalogColumnSupport();
+      if (!support.hasActive) {
+        return res.status(400).json({ error: 'Schema atual nao suporta status ativo/inativo.' });
+      }
+
+      const active = req.body?.active !== false;
+      const payload: Record<string, any> = { active };
+      if (support.hasUpdatedAt) payload.updated_at = new Date().toISOString();
+
+      const selectColumns = await getServicesCatalogSelectColumns({ includeCreatedAt: true });
+      const { data, error } = await supabase
+        .from('services_catalog')
+        .update(payload)
+        .eq('id', req.params.id)
+        .select(selectColumns)
+        .single();
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json(mapServiceCatalogRecord(data));
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Falha ao atualizar status do servico.' });
+    }
+  };
+
+  app.get("/api/admin/services", listAdminServices);
+  app.post("/api/admin/services", createAdminService);
+  app.put("/api/admin/services/:id", updateAdminService);
+  app.patch("/api/admin/services/:id/status", patchAdminServiceStatus);
+
+  app.get("/api/services-catalog", listAdminServices);
+  app.post("/api/services-catalog", createAdminService);
+  app.put("/api/services-catalog/:id", updateAdminService);
 
   app.delete("/api/services-catalog/:id", async (req, res) => {
     const { error } = await supabase.from('services_catalog').delete().eq('id', req.params.id);

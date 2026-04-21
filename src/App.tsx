@@ -119,11 +119,14 @@ interface ServiceCatalogItem {
   id: number;
   name: string;
   price: number;
+  price_cents?: number;
   duration_minutes: number;
+  duration_min?: number;
   description?: string;
   active?: boolean;
   category?: string;
   image_url?: string | null;
+  updated_at?: string;
 }
 
 interface PublicBookingServiceItem {
@@ -544,7 +547,7 @@ const LandingPage = ({ setActiveTab }: { setActiveTab: (t: AppRoute) => void }) 
 const AdminDashboard = () => {
   const [stats, setStats] = useState<Stats | null>(null);
   const [revenueData, setRevenueData] = useState<any[]>([]);
-  const [activeView, setActiveView] = useState<'overview' | 'pos' | 'appointments' | 'barbers' | 'services-catalog' | 'inventory' | 'customers' | 'subscriptions' | 'expenses' | 'financial' | 'reports' | 'plans' | 'settings'>('overview');
+  const [activeView, setActiveView] = useState<'overview' | 'pos' | 'appointments' | 'barbers' | 'services' | 'inventory' | 'customers' | 'subscriptions' | 'expenses' | 'financial' | 'reports' | 'plans' | 'settings'>('overview');
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
@@ -557,7 +560,7 @@ const AdminDashboard = () => {
     { id: 'pos', label: 'Caixa (PDV)', icon: CreditCard },
     { id: 'appointments', label: 'Agendamentos', icon: Calendar },
     { id: 'barbers', label: 'Gestão de Equipe', icon: Scissors },
-    { id: 'services-catalog', label: 'Catálogo de Serviços', icon: Star },
+    { id: 'services', label: 'Serviços', icon: Star },
     { id: 'inventory', label: 'Cadastro de Produtos', icon: Package },
     { id: 'customers', label: 'Clientes', icon: Users },
     { id: 'subscriptions', label: 'Assinaturas', icon: History },
@@ -650,7 +653,7 @@ const AdminDashboard = () => {
             {activeView === 'barbers' && <BarberManager />}
             {activeView === 'inventory' && <InventoryManager />}
             {activeView === 'customers' && <CustomerManager />}
-            {activeView === 'services-catalog' && <ServicesCatalogManager />}
+            {activeView === 'services' && <ServicesCatalogManager />}
             {activeView === 'subscriptions' && <SubscriptionsView />}
             {activeView === 'expenses' && <ExpensesManager />}
             {activeView === 'financial' && <FinancialReport />}
@@ -1790,69 +1793,347 @@ const ReportsView = () => {
 const ServicesCatalogManager = () => {
   const [services, setServices] = useState<ServiceCatalogItem[]>([]);
   const [editing, setEditing] = useState<Partial<ServiceCatalogItem> | null>(null);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const serviceCategories = ['Avulso', 'Pacote', 'Barba', 'Corte', 'Combo', 'Tratamento'];
-  const fetchServices = () => fetch('/api/services-catalog').then(r => r.json()).then(d => setServices(Array.isArray(d) ? d : []));
-  useEffect(() => { fetchServices(); }, []);
+  const formatCurrency = (value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Number(value || 0));
+  const emptyDraft = (): Partial<ServiceCatalogItem> => ({
+    name: '',
+    description: '',
+    duration_min: 60,
+    duration_minutes: 60,
+    price: 0,
+    category: 'Avulso',
+    active: true,
+    image_url: null,
+  });
+  const getServiceDuration = (service: Partial<ServiceCatalogItem> | null | undefined) => Number(service?.duration_min ?? service?.duration_minutes ?? 60) || 60;
+  const normalizeService = (item: any): ServiceCatalogItem => ({
+    id: Number(item?.id || 0),
+    name: String(item?.name || '').trim(),
+    description: String(item?.description || '').trim() || undefined,
+    duration_min: Number(item?.duration_min ?? item?.duration_minutes ?? 60) || 60,
+    duration_minutes: Number(item?.duration_minutes ?? item?.duration_min ?? 60) || 60,
+    price: Number(item?.price || 0),
+    price_cents: Number(item?.price_cents ?? Math.round(Number(item?.price || 0) * 100)),
+    category: String(item?.category || 'Avulso'),
+    active: item?.active !== false,
+    image_url: item?.image_url || null,
+    updated_at: item?.updated_at || undefined,
+  });
+
+  const fetchServices = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/admin/services');
+      const data = await response.json().catch(() => []);
+      if (!response.ok) {
+        throw new Error(String((data as any)?.error || 'Não foi possível carregar os serviços.'));
+      }
+      setServices(Array.isArray(data) ? data.map(normalizeService) : []);
+    } catch (error: any) {
+      setServices([]);
+      setStatusMessage({ type: 'error', message: error?.message || 'Não foi possível carregar os serviços.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void fetchServices(); }, []);
+
+  const filteredServices = services.filter((service) => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) return true;
+    return `${service.name} ${service.category || ''}`.toLowerCase().includes(normalizedQuery);
+  });
+
+  const openNewService = () => {
+    setFormError('');
+    setStatusMessage(null);
+    setEditing(emptyDraft());
+  };
+
+  const openEditService = (service: ServiceCatalogItem) => {
+    setFormError('');
+    setStatusMessage(null);
+    setEditing({
+      ...service,
+      duration_min: getServiceDuration(service),
+      duration_minutes: getServiceDuration(service),
+    });
+  };
+
+  const handleImageUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !editing) return;
+
+    if (!isSupabaseConfigured) {
+      setStatusMessage({ type: 'error', message: 'Supabase não configurado para upload de imagem.' });
+      return;
+    }
+
+    setUploadingImage(true);
+    setStatusMessage({ type: 'info', message: 'Enviando imagem do serviço...' });
+
+    try {
+      const extension = file.name.split('.').pop() || 'jpg';
+      const safeName = String(editing.name || 'servico')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+      const filePath = `${safeName || 'servico'}-${Date.now()}.${extension}`;
+
+      const { error } = await supabase.storage.from('services').upload(filePath, file, { upsert: true });
+      if (error) throw error;
+
+      const { data } = supabase.storage.from('services').getPublicUrl(filePath);
+      setEditing((current) => current ? { ...current, image_url: data.publicUrl } : current);
+      setStatusMessage({ type: 'success', message: 'Imagem enviada com sucesso.' });
+    } catch (error: any) {
+      setStatusMessage({
+        type: 'error',
+        message: error?.message?.includes('not found')
+          ? 'Bucket "services" não existe. Crie um bucket público com esse nome no Supabase Storage.'
+          : `Erro ao enviar imagem: ${error?.message || 'falha desconhecida'}`,
+      });
+    } finally {
+      setUploadingImage(false);
+      event.target.value = '';
+    }
+  };
 
   const handleSave = async () => {
     if (!editing) return;
-    const method = editing.id ? 'PUT' : 'POST';
-    const url = editing.id ? `/api/services-catalog/${editing.id}` : '/api/services-catalog';
-    await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editing) });
-    setEditing(null);
-    fetchServices();
+    const normalizedName = String(editing.name || '').trim();
+    const duration = getServiceDuration(editing);
+    const price = Number(editing.price || 0);
+
+    if (!normalizedName) {
+      setFormError('Nome é obrigatório.');
+      return;
+    }
+
+    if (!duration || duration <= 0) {
+      setFormError('A duração deve ser maior que zero.');
+      return;
+    }
+
+    if (!Number.isFinite(price) || price < 0) {
+      setFormError('O preço deve ser maior ou igual a zero.');
+      return;
+    }
+
+    setSaving(true);
+    setFormError('');
+
+    try {
+      const method = editing.id ? 'PUT' : 'POST';
+      const url = editing.id ? `/api/admin/services/${editing.id}` : '/api/admin/services';
+      const response = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: normalizedName,
+          description: editing.description || '',
+          duration_min: duration,
+          price,
+          category: editing.category || 'Avulso',
+          active: editing.active !== false,
+          image_url: editing.image_url || null,
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(String((data as any)?.error || 'Não foi possível salvar o serviço.'));
+      }
+
+      setStatusMessage({ type: 'success', message: editing.id ? 'Serviço atualizado.' : 'Serviço criado.' });
+      setEditing(null);
+      await fetchServices();
+    } catch (error: any) {
+      setFormError(error?.message || 'Não foi possível salvar o serviço.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Deseja excluir este serviço?')) return;
-    await fetch(`/api/services-catalog/${id}`, { method: 'DELETE' });
-    fetchServices();
+  const handleToggleStatus = async (service: ServiceCatalogItem) => {
+    try {
+      const response = await fetch(`/api/admin/services/${service.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: service.active === false }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(String((data as any)?.error || 'Não foi possível atualizar o status.'));
+      }
+      setStatusMessage({ type: 'success', message: service.active === false ? 'Serviço ativado.' : 'Serviço inativado.' });
+      await fetchServices();
+    } catch (error: any) {
+      setStatusMessage({ type: 'error', message: error?.message || 'Não foi possível atualizar o status.' });
+    }
   };
 
   return (
     <div className="space-y-8">
-      <div className="flex justify-end">
-        <button onClick={() => setEditing({ name: '', price: 0, duration_minutes: 60, description: '', category: 'Avulso', active: true })} className="bg-white text-black px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-gray-200 transition-all"><Plus className="w-4 h-4" /> Novo Serviço</button>
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-1 items-center gap-3 rounded-2xl border border-white/5 bg-zinc-900/60 px-4 py-3">
+          <Search className="h-4 w-4 text-gray-500" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar por nome ou categoria"
+            className="w-full bg-transparent text-sm text-white outline-none placeholder:text-gray-600"
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={() => void fetchServices()} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-white/10">
+            <RefreshCw className="h-4 w-4" /> Atualizar
+          </button>
+          <button onClick={openNewService} className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-3 text-sm font-bold text-black transition-colors hover:bg-gray-200">
+            <Plus className="h-4 w-4" /> Novo serviço
+          </button>
+        </div>
       </div>
-      <div className="bg-zinc-900/40 border border-white/5 rounded-[2.5rem] overflow-hidden">
-        <table className="w-full text-left">
-          <thead><tr className="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/5"><th className="px-8 py-6 font-medium">Serviço</th><th className="px-8 py-6 font-medium">Categoria</th><th className="px-8 py-6 font-medium">Status</th><th className="px-8 py-6 font-medium">Preço</th><th className="px-8 py-6 font-medium">Duração</th><th className="px-8 py-6 font-medium text-right">Ações</th></tr></thead>
-          <tbody className="divide-y divide-white/5">
-            {services.map(s => (
-              <tr key={s.id} className="text-sm text-gray-300 hover:bg-white/5 transition-colors group">
-                <td className="px-8 py-6"><div><span className="font-medium text-white">{s.name}</span>{s.description && <p className="text-xs text-gray-500 mt-1">{s.description}</p>}</div></td>
-                <td className="px-8 py-6">{s.category || 'Avulso'}</td>
-                <td className="px-8 py-6"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase', s.active === false ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300')}>{s.active === false ? 'Inativo' : 'Ativo'}</span></td>
-                <td className="px-8 py-6">R$ {Number(s.price).toFixed(2)}</td>
-                <td className="px-8 py-6">{s.duration_minutes} min</td>
-                <td className="px-8 py-6 text-right"><div className="flex justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity"><button onClick={() => setEditing(s)} className="p-2 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"><Edit2 className="w-4 h-4" /></button><button onClick={() => handleDelete(s.id)} className="p-2 hover:bg-red-500/10 rounded-lg text-gray-400 hover:text-red-500 transition-colors"><Trash2 className="w-4 h-4" /></button></div></td>
-              </tr>
-            ))}
-            {services.length === 0 && <tr><td colSpan={6} className="px-8 py-12 text-center text-gray-500">Nenhum serviço cadastrado.</td></tr>}
-          </tbody>
-        </table>
+
+      {statusMessage && (
+        <div className={cn('rounded-2xl border px-4 py-3 text-sm', statusMessage.type === 'error' ? 'border-red-500/20 bg-red-500/10 text-red-200' : statusMessage.type === 'success' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200' : 'border-white/10 bg-white/5 text-gray-300')}>
+          {statusMessage.message}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {loading && (
+          <div className="xl:col-span-2 rounded-[2rem] border border-white/5 bg-zinc-900/40 px-6 py-16 text-center text-gray-400">
+            Carregando serviços...
+          </div>
+        )}
+
+        {!loading && filteredServices.map((service) => (
+          <div key={service.id} className="rounded-[2rem] border border-white/5 bg-zinc-900/40 p-6 shadow-[0_12px_40px_rgba(0,0,0,0.25)]">
+            <div className="flex gap-4">
+              {service.image_url ? (
+                <img src={service.image_url} alt={service.name} className="h-24 w-24 rounded-2xl object-cover" />
+              ) : (
+                <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-gray-500">
+                  <Package className="h-8 w-8" />
+                </div>
+              )}
+
+              <div className="min-w-0 flex-1 space-y-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-lg font-semibold text-white">{service.name}</h3>
+                    <p className="mt-1 text-sm text-gray-500">{service.description || 'Sem descrição cadastrada.'}</p>
+                  </div>
+                  <span className={cn('shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase', service.active === false ? 'bg-red-500/10 text-red-300' : 'bg-emerald-500/10 text-emerald-300')}>
+                    {service.active === false ? 'Inativo' : 'Ativo'}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap gap-2 text-xs text-gray-400">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{service.category || 'Avulso'}</span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1">{getServiceDuration(service)} min</span>
+                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-emerald-300">{formatCurrency(service.price)}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                  <span className="text-xs text-gray-600">
+                    {service.updated_at ? `Atualizado em ${new Date(service.updated_at).toLocaleDateString('pt-BR')}` : 'Sem histórico de atualização'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => openEditService(service)} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-white/10">
+                      <Edit2 className="h-4 w-4" /> Editar
+                    </button>
+                    <button onClick={() => void handleToggleStatus(service)} className={cn('inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-bold transition-colors', service.active === false ? 'bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/20' : 'bg-red-500/15 text-red-200 hover:bg-red-500/20')}>
+                      {service.active === false ? 'Ativar' : 'Inativar'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {!loading && filteredServices.length === 0 && (
+          <div className="xl:col-span-2 rounded-[2rem] border border-dashed border-white/10 bg-zinc-900/30 px-6 py-16 text-center text-gray-500">
+            Nenhum serviço encontrado para a busca atual.
+          </div>
+        )}
       </div>
+
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="bg-zinc-900 border border-white/10 p-8 rounded-[2.5rem] w-full max-w-md shadow-2xl">
-            <h3 className="text-xl font-medium mb-6">{editing.id ? 'Editar Serviço' : 'Novo Serviço'}</h3>
-            <div className="space-y-4">
-              <input placeholder="Nome do Serviço" value={editing.name || ''} onChange={e => setEditing({...editing, name: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-              <div className="grid grid-cols-2 gap-4">
-                <input type="number" placeholder="Preço (R$)" value={editing.price || ''} onChange={e => setEditing({...editing, price: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
-                                <input type="number" placeholder="Duração (min)" value={editing.duration_minutes || 60} onChange={e => setEditing({...editing, duration_minutes: Number(e.target.value)})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm" />
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="w-full max-w-2xl rounded-[2.5rem] border border-white/10 bg-zinc-900 p-8 shadow-2xl">
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-medium">{editing.id ? 'Editar serviço' : 'Novo serviço'}</h3>
+                <p className="mt-1 text-sm text-gray-500">Gerencie nome, descrição, imagem, duração, preço e status.</p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <select value={editing.category || 'Avulso'} onChange={e => setEditing({...editing, category: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm text-gray-400">
-                  {serviceCategories.map(category => <option key={category} value={category}>{category}</option>)}
-                </select>
-                <select value={editing.active === false ? 'false' : 'true'} onChange={e => setEditing({...editing, active: e.target.value === 'true'})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm text-gray-400">
-                  <option value="true">Ativo</option>
-                  <option value="false">Inativo</option>
-                </select>
+              <button onClick={() => setEditing(null)} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-gray-300 hover:bg-white/10">Fechar</button>
+            </div>
+
+            <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div className="space-y-4">
+                {editing.image_url ? (
+                  <img src={editing.image_url} alt={editing.name || 'Serviço'} className="h-56 w-full rounded-[1.75rem] object-cover" />
+                ) : (
+                  <div className="flex h-56 w-full items-center justify-center rounded-[1.75rem] border border-dashed border-white/10 bg-black text-gray-500">
+                    <Package className="h-10 w-10" />
+                  </div>
+                )}
+
+                <label className={cn('flex w-full cursor-pointer items-center justify-center rounded-xl px-4 py-3 text-sm font-bold transition-colors', uploadingImage ? 'bg-white/10 text-gray-500' : 'bg-white text-black hover:bg-gray-200')}>
+                  {uploadingImage ? 'Enviando imagem...' : 'Upload da imagem'}
+                  <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} disabled={uploadingImage} />
+                </label>
+
+                {editing.image_url && (
+                  <button onClick={() => setEditing({ ...editing, image_url: null })} className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-white/10">
+                    Remover imagem
+                  </button>
+                )}
               </div>
-              <textarea placeholder="Descrição (opcional)" value={editing.description || ''} onChange={e => setEditing({...editing, description: e.target.value})} className="w-full bg-black border border-white/10 rounded-xl p-4 text-sm h-20 resize-none" />
-              <div className="flex gap-4 pt-4"><button onClick={() => setEditing(null)} className="flex-1 py-4 rounded-xl bg-white/5 font-bold">Cancelar</button><button onClick={handleSave} className="flex-1 py-4 rounded-xl bg-white text-black font-bold">Salvar</button></div>
+
+              <div className="space-y-4">
+                <input placeholder="Nome do serviço" value={editing.name || ''} onChange={e => setEditing({ ...editing, name: e.target.value })} className="w-full rounded-xl border border-white/10 bg-black p-4 text-sm text-white outline-none placeholder:text-gray-600" />
+
+                <textarea placeholder="Descrição" value={editing.description || ''} onChange={e => setEditing({ ...editing, description: e.target.value })} className="h-24 w-full resize-none rounded-xl border border-white/10 bg-black p-4 text-sm text-white outline-none placeholder:text-gray-600" />
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <input type="number" min="1" placeholder="Duração (min)" value={getServiceDuration(editing)} onChange={e => setEditing({ ...editing, duration_min: Number(e.target.value), duration_minutes: Number(e.target.value) })} className="w-full rounded-xl border border-white/10 bg-black p-4 text-sm text-white outline-none" />
+                  <input type="number" min="0" step="0.01" placeholder="Preço (R$)" value={editing.price ?? 0} onChange={e => setEditing({ ...editing, price: Number(e.target.value) })} className="w-full rounded-xl border border-white/10 bg-black p-4 text-sm text-white outline-none" />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <select value={editing.category || 'Avulso'} onChange={e => setEditing({ ...editing, category: e.target.value })} className="w-full rounded-xl border border-white/10 bg-black p-4 text-sm text-gray-300 outline-none">
+                    {serviceCategories.map(category => <option key={category} value={category}>{category}</option>)}
+                  </select>
+                  <select value={editing.active === false ? 'false' : 'true'} onChange={e => setEditing({ ...editing, active: e.target.value === 'true' })} className="w-full rounded-xl border border-white/10 bg-black p-4 text-sm text-gray-300 outline-none">
+                    <option value="true">Ativo</option>
+                    <option value="false">Inativo</option>
+                  </select>
+                </div>
+
+                {formError && (
+                  <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                    {formError}
+                  </div>
+                )}
+
+                <div className="flex gap-4 pt-4">
+                  <button onClick={() => setEditing(null)} className="flex-1 rounded-xl bg-white/5 py-4 font-bold text-white transition-colors hover:bg-white/10">Cancelar</button>
+                  <button onClick={() => void handleSave()} disabled={saving} className={cn('flex-1 rounded-xl py-4 font-bold transition-colors', saving ? 'bg-gray-700 text-gray-300' : 'bg-white text-black hover:bg-gray-200')}>
+                    {saving ? 'Salvando...' : 'Salvar'}
+                  </button>
+                </div>
+              </div>
             </div>
           </motion.div>
         </div>
