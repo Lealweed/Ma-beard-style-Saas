@@ -17,6 +17,7 @@ import { supabase, isSupabaseConfigured, getSupabaseDiagnostics, testSupabaseCon
 import { Session } from '@supabase/supabase-js';
 import { GoogleCalendarPage, LegalPage } from './legal';
 import AppointmentsManagerMonthly from './appointments-monthly';
+import { ServicesPage } from './services';
 
 // Utility for tailwind classes
 function cn(...inputs: ClassValue[]) {
@@ -132,7 +133,7 @@ interface Expense {
   date: string;
 }
 
-type AppRoute = 'landing' | 'booking' | 'admin' | 'privacy' | 'terms' | 'google';
+type AppRoute = 'landing' | 'booking' | 'services' | 'admin' | 'privacy' | 'terms' | 'google';
 
 // --- Components ---
 
@@ -141,6 +142,7 @@ const Navbar = ({ activeTab, setActiveTab, session }: { activeTab: AppRoute, set
 
   const navItems: Array<{ id: AppRoute; label: string; icon: typeof Scissors }> = [
     { id: 'landing', label: 'Início', icon: Scissors },
+    { id: 'services', label: 'Serviços', icon: Star },
     { id: 'booking', label: 'Agendar', icon: Calendar },
     { id: 'admin', label: 'Dashboard', icon: LayoutDashboard },
   ];
@@ -3298,6 +3300,7 @@ const SettingsView = () => {
 const APP_TAB_PATHS: Record<AppRoute, string> = {
   landing: '/',
   booking: '/booking',
+  services: '/services',
   admin: '/admin',
   privacy: '/politica-de-privacidade',
   terms: '/termos-de-uso',
@@ -3309,6 +3312,7 @@ const getInitialTabFromLocation = (): AppRoute => {
 
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
   if (pathname === '/booking') return 'booking';
+  if (pathname === '/services') return 'services';
   if (pathname === '/admin') return 'admin';
   if (pathname === '/politica-de-privacidade') return 'privacy';
   if (pathname === '/privacy-policy') return 'privacy';
@@ -3317,12 +3321,12 @@ const getInitialTabFromLocation = (): AppRoute => {
   if (pathname === '/google-calendar') return 'google';
 
   const tabParam = new URLSearchParams(window.location.search).get('tab');
-  if (tabParam === 'landing' || tabParam === 'booking' || tabParam === 'admin' || tabParam === 'privacy' || tabParam === 'terms' || tabParam === 'google') {
+  if (tabParam === 'landing' || tabParam === 'booking' || tabParam === 'services' || tabParam === 'admin' || tabParam === 'privacy' || tabParam === 'terms' || tabParam === 'google') {
     return tabParam;
   }
 
   const hash = window.location.hash.replace(/^#/, '');
-  if (hash === 'landing' || hash === 'booking' || hash === 'admin' || hash === 'privacy' || hash === 'terms' || hash === 'google') {
+  if (hash === 'landing' || hash === 'booking' || hash === 'services' || hash === 'admin' || hash === 'privacy' || hash === 'terms' || hash === 'google') {
     return hash;
   }
 
@@ -3426,6 +3430,8 @@ export default function App() {
         <AnimatePresence mode="wait">
           {activeTab === 'landing' ? (
             <motion.div key="landing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><LandingPage setActiveTab={setActiveTab} /></motion.div>
+          ) : activeTab === 'services' ? (
+            <motion.div key="services" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><ServicesPage /></motion.div>
           ) : activeTab === 'booking' ? (
             <motion.div key="booking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><PublicBooking setActiveTab={setActiveTab} /></motion.div>
           ) : activeTab === 'privacy' ? (
